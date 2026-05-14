@@ -1,0 +1,32 @@
+FROM maven:3.9.6-eclipse-temurin-21 AS build
+
+WORKDIR /app
+
+COPY pom.xml .
+RUN mvn dependency:go-offline -B
+
+COPY src ./src
+RUN mvn package -DskipTests -B
+
+FROM eclipse-temurin:21-jre-alpine AS runner
+
+WORKDIR /app
+
+RUN addgroup -S spring && adduser -S spring -G spring
+
+COPY --from=build /app/target/taskflow-backend-*.jar app.jar
+
+RUN chown spring:spring app.jar
+
+USER spring
+
+ENV SPRING_PROFILES_ACTIVE=prod
+ENV SERVER_PORT=8080
+ENV JAVA_OPTS="-Xms256m -Xmx512m -XX:+UseContainerSupport"
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD wget -qO- http://localhost:8080/actuator/health || exit 1
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

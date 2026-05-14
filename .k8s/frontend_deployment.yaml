@@ -17,6 +17,9 @@ spec:
           image: cafe-grao-frontend:latest
           ports:
             - containerPort: 80
+          env:
+            - name: BACKEND_URL
+              value: "http://backend-service:3000" # URL do backend dentro do cluster
 ---
 apiVersion: v1
 kind: Service
