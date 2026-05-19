@@ -12,6 +12,14 @@ build/
 **/dist/
 **/build/
 
+# ── Coverage (relatório de testes) ──
+coverage/
+**/coverage/
+*.lcov
+clover.xml
+coverage-final.json
+lcov.info
+
 # ── Variáveis de ambiente ──
 .env
 .env.local
@@ -34,6 +42,8 @@ log-frontend.txt
 .parcel-cache/
 .vite/
 **/.vite/
+.eslintcache
+*.tsbuildinfo
 
 # ── Docker ──
 .dockerignore
@@ -50,11 +60,3 @@ desktop.ini
 *.ntvs*
 *.njsproj
 *.sln
-
-# ── Cobertura de testes ──
-coverage/
-.nyc_output/
-
-# ── Misc ──
-*.tsbuildinfo
-.eslintcache

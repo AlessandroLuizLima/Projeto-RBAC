@@ -109,6 +109,13 @@ describe('produtosController.atualizar()', () => {
     await atualizar(req, res);
     expect(res.status).toHaveBeenCalledWith(404);
   });
+  test('deve retornar 500 em caso de erro no banco', async () => {
+    const pool = makePool(jest.fn().mockRejectedValue(new Error('DB')));
+    const { atualizar } = makeController(pool);
+    const { req, res } = mockReqRes({ nome: 'X' }, { id: '1' });
+    await atualizar(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
 });
 
 describe('produtosController.remover()', () => {
@@ -126,5 +133,13 @@ describe('produtosController.remover()', () => {
     const { req, res } = mockReqRes({}, { id: '999' });
     await remover(req, res);
     expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  test('deve retornar 500 em caso de erro no banco', async () => {
+    const pool = makePool(jest.fn().mockRejectedValue(new Error('DB')));
+    const { remover } = makeController(pool);
+    const { req, res } = mockReqRes({}, { id: '1' });
+    await remover(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
   });
 });

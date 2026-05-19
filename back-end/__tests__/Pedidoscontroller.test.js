@@ -3,14 +3,21 @@ const { makeController } = require('./mocks/pedidosController.mock');
 function makePool(queryFn, connectFn) {
   return { query: queryFn || jest.fn(), connect: connectFn || jest.fn() };
 }
-function mockReqRes(body = {}, params = {}, usuario = { id: 1, role: 'gerente' }) {
+function mockReqRes(body, params, usuario) {
+  body = body || {};
+  params = params || {};
+  usuario = usuario || { id: 1, role: 'gerente' };
   const req = { body, params, usuario };
   const res = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
   return { req, res };
 }
-function makeClient(responses = []) {
+function makeClient(responses) {
+  responses = responses || [];
   const client = { query: jest.fn(), release: jest.fn() };
-  responses.forEach(r => r instanceof Error ? client.query.mockRejectedValueOnce(r) : client.query.mockResolvedValueOnce(r));
+  responses.forEach(function(r) {
+    if (r instanceof Error) client.query.mockRejectedValueOnce(r);
+    else client.query.mockResolvedValueOnce(r);
+  });
   return client;
 }
 
@@ -63,6 +70,14 @@ describe('pedidosController.buscarPorId()', () => {
     await buscarPorId(req, res);
     expect(res.status).toHaveBeenCalledWith(404);
   });
+
+  test('deve retornar 500 em caso de erro no banco', async () => {
+    const pool = makePool(jest.fn().mockRejectedValue(new Error('DB')));
+    const { buscarPorId } = makeController(pool);
+    const { req, res } = mockReqRes({}, { id: '1' });
+    await buscarPorId(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
 });
 
 describe('pedidosController.criar()', () => {
@@ -85,18 +100,18 @@ describe('pedidosController.criar()', () => {
   test('deve criar pedido com sucesso e retornar 201', async () => {
     const pedidoCriado = { id: 10, total: 10.0, status: 'pendente' };
     const client = makeClient([
-      undefined,                                                              // BEGIN
-      { rows: [{ id: 10 }] },                                                 // INSERT pedido
-      { rows: [{ id: 1, preco: 5.0, nome: 'Espresso', ativo: true }] },      // SELECT produto
-      { rows: [{ quantidade: 20 }] },                                         // SELECT estoque
-      undefined,                                                              // INSERT itens
-      undefined,                                                              // UPDATE estoque
-      undefined,                                                              // UPDATE total
-      undefined,                                                              // COMMIT
+      undefined,
+      { rows: [{ id: 10 }] },
+      { rows: [{ id: 1, preco: 5.0, nome: 'Espresso', ativo: true }] },
+      { rows: [{ quantidade: 20 }] },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
     ]);
     const pool = makePool(jest.fn().mockResolvedValue({ rows: [pedidoCriado] }), jest.fn().mockResolvedValue(client));
     const { criar } = makeController(pool);
-    const { req, res } = mockReqRes({ itens: [{ produto_id: 1, quantidade: 2 }], observacao: 'Sem açúcar' });
+    const { req, res } = mockReqRes({ itens: [{ produto_id: 1, quantidade: 2 }], observacao: 'Sem acucar' });
     await criar(req, res);
     expect(res.status).toHaveBeenCalledWith(201);
     expect(client.release).toHaveBeenCalled();
@@ -117,7 +132,7 @@ describe('pedidosController.criar()', () => {
       undefined,
       { rows: [{ id: 10 }] },
       { rows: [{ id: 1, preco: 5.0, nome: 'Espresso', ativo: true }] },
-      { rows: [{ quantidade: 1 }] },  // só 1 disponível
+      { rows: [{ quantidade: 1 }] },
     ]);
     const pool = makePool(jest.fn(), jest.fn().mockResolvedValue(client));
     const { criar } = makeController(pool);
@@ -125,6 +140,23 @@ describe('pedidosController.criar()', () => {
     await criar(req, res);
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ erro: expect.stringContaining('insuficiente') }));
+    expect(client.release).toHaveBeenCalled();
+  });
+
+  test('deve fazer ROLLBACK e retornar 500 em erro inesperado na transacao', async () => {
+    const client = makeClient([
+      undefined,
+      { rows: [{ id: 10 }] },
+      { rows: [{ id: 1, preco: 5.0, nome: 'Espresso', ativo: true }] },
+      { rows: [{ quantidade: 20 }] },
+      undefined,
+      new Error('Falha inesperada no UPDATE estoque'),
+    ]);
+    const pool = makePool(jest.fn(), jest.fn().mockResolvedValue(client));
+    const { criar } = makeController(pool);
+    const { req, res } = mockReqRes({ itens: [{ produto_id: 1, quantidade: 2 }] });
+    await criar(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
     expect(client.release).toHaveBeenCalled();
   });
 });
@@ -139,7 +171,7 @@ describe('pedidosController.atualizarStatus()', () => {
     expect(res.json).toHaveBeenCalledWith(pedido);
   });
 
-  test('deve retornar 400 para status inválido', async () => {
+  test('deve retornar 400 para status invalido', async () => {
     const pool = makePool(jest.fn());
     const { atualizarStatus } = makeController(pool);
     const { req, res } = mockReqRes({ status: 'voando' }, { id: '1' });
@@ -147,7 +179,7 @@ describe('pedidosController.atualizarStatus()', () => {
     expect(res.status).toHaveBeenCalledWith(400);
   });
 
-  test('barista não pode cancelar pedido', async () => {
+  test('barista nao pode cancelar pedido', async () => {
     const pool = makePool(jest.fn());
     const { atualizarStatus } = makeController(pool);
     const { req, res } = mockReqRes({ status: 'cancelado' }, { id: '1' }, { id: 2, role: 'barista' });
@@ -164,12 +196,20 @@ describe('pedidosController.atualizarStatus()', () => {
     expect(res.json).toHaveBeenCalledWith(pedido);
   });
 
-  test('deve retornar 404 se pedido não existir', async () => {
+  test('deve retornar 404 se pedido nao existir', async () => {
     const pool = makePool(jest.fn().mockResolvedValue({ rows: [] }));
     const { atualizarStatus } = makeController(pool);
     const { req, res } = mockReqRes({ status: 'pronto' }, { id: '999' });
     await atualizarStatus(req, res);
     expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  test('deve retornar 500 em caso de erro no banco', async () => {
+    const pool = makePool(jest.fn().mockRejectedValue(new Error('DB')));
+    const { atualizarStatus } = makeController(pool);
+    const { req, res } = mockReqRes({ status: 'pronto' }, { id: '1' });
+    await atualizarStatus(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
   });
 });
 
@@ -182,11 +222,19 @@ describe('pedidosController.remover()', () => {
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ mensagem: expect.any(String) }));
   });
 
-  test('deve retornar 404 se pedido não existir', async () => {
+  test('deve retornar 404 se pedido nao existir', async () => {
     const pool = makePool(jest.fn().mockResolvedValue({ rows: [] }));
     const { remover } = makeController(pool);
     const { req, res } = mockReqRes({}, { id: '999' });
     await remover(req, res);
     expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  test('deve retornar 500 em caso de erro no banco', async () => {
+    const pool = makePool(jest.fn().mockRejectedValue(new Error('DB')));
+    const { remover } = makeController(pool);
+    const { req, res } = mockReqRes({}, { id: '1' });
+    await remover(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
   });
 });

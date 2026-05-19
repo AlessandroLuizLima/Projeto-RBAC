@@ -1,7 +1,9 @@
 const { makeController } = require('./mocks/usuariosController.mock');
 
 function makePool(queryFn) { return { query: queryFn }; }
-function mockReqRes(body = {}, params = {}) {
+function mockReqRes(body, params) {
+  body = body || {};
+  params = params || {};
   const req = { body, params };
   const res = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
   return { req, res };
@@ -18,7 +20,7 @@ describe('usuariosController.listar()', () => {
     const { req, res } = mockReqRes();
     await listar(req, res);
     expect(res.json).toHaveBeenCalledWith(usuarios);
-    res.json.mock.calls[0][0].forEach(u => expect(u.senha).toBeUndefined());
+    res.json.mock.calls[0][0].forEach(function(u) { expect(u.senha).toBeUndefined(); });
   });
 
   test('deve retornar 500 em caso de erro', async () => {
@@ -47,6 +49,14 @@ describe('usuariosController.buscarPorId()', () => {
     await buscarPorId(req, res);
     expect(res.status).toHaveBeenCalledWith(404);
   });
+
+  test('deve retornar 500 em caso de erro no banco', async () => {
+    const pool = makePool(jest.fn().mockRejectedValue(new Error('DB')));
+    const { buscarPorId } = makeController(pool);
+    const { req, res } = mockReqRes({}, { id: '1' });
+    await buscarPorId(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
 });
 
 describe('usuariosController.criar()', () => {
@@ -57,10 +67,11 @@ describe('usuariosController.criar()', () => {
       { nome: 'X', email: 'x@cafe.com', senha: '', role: 'barista' },
       { nome: 'X', email: 'x@cafe.com', senha: '123', role: '' },
     ];
-    for (const body of casos) {
+    var i;
+    for (i = 0; i < casos.length; i++) {
       const pool = makePool(jest.fn());
       const { criar } = makeController(pool);
-      const { req, res } = mockReqRes(body);
+      const { req, res } = mockReqRes(casos[i]);
       await criar(req, res);
       expect(res.status).toHaveBeenCalledWith(400);
     }
@@ -76,10 +87,10 @@ describe('usuariosController.criar()', () => {
   });
 
   test('deve criar usuário com sucesso e retornar 201', async () => {
-    const novoUsuario = { id: 5, nome: 'João', email: 'joao@cafe.com', role: 'barista', ativo: true };
+    const novoUsuario = { id: 5, nome: 'Joao', email: 'joao@cafe.com', role: 'barista', ativo: true };
     const pool = makePool(jest.fn().mockResolvedValue({ rows: [novoUsuario] }));
     const { criar } = makeController(pool);
-    const { req, res } = mockReqRes({ nome: 'João', email: 'joao@cafe.com', senha: 'senha123', role: 'barista' });
+    const { req, res } = mockReqRes({ nome: 'Joao', email: 'joao@cafe.com', senha: 'senha123', role: 'barista' });
     await criar(req, res);
     expect(res.status).toHaveBeenCalledWith(201);
     expect(res.json).toHaveBeenCalledWith(novoUsuario);
@@ -94,12 +105,23 @@ describe('usuariosController.criar()', () => {
     expect(res.status).toHaveBeenCalledWith(409);
   });
 
-  test('roles válidas devem ser aceitas', async () => {
-    for (const role of ['proprietario', 'gerente', 'barista']) {
-      const novoUsuario = { id: 1, nome: 'Teste', email: `${role}@cafe.com`, role };
+  test('deve retornar 500 para erro generico no banco', async () => {
+    const pool = makePool(jest.fn().mockRejectedValue(new Error('Outro erro')));
+    const { criar } = makeController(pool);
+    const { req, res } = mockReqRes({ nome: 'X', email: 'x@cafe.com', senha: '123', role: 'barista' });
+    await criar(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  test('roles validas devem ser aceitas', async () => {
+    const roles = ['proprietario', 'gerente', 'barista'];
+    var i;
+    for (i = 0; i < roles.length; i++) {
+      const role = roles[i];
+      const novoUsuario = { id: 1, nome: 'Teste', email: role + '@cafe.com', role: role };
       const pool = makePool(jest.fn().mockResolvedValue({ rows: [novoUsuario] }));
       const { criar } = makeController(pool);
-      const { req, res } = mockReqRes({ nome: 'Teste', email: `${role}@cafe.com`, senha: '123456', role });
+      const { req, res } = mockReqRes({ nome: 'Teste', email: role + '@cafe.com', senha: '123456', role: role });
       await criar(req, res);
       expect(res.status).toHaveBeenCalledWith(201);
     }
@@ -122,6 +144,14 @@ describe('usuariosController.atualizar()', () => {
     const { req, res } = mockReqRes({ nome: 'X' }, { id: '999' });
     await atualizar(req, res);
     expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  test('deve retornar 500 em caso de erro no banco', async () => {
+    const pool = makePool(jest.fn().mockRejectedValue(new Error('DB')));
+    const { atualizar } = makeController(pool);
+    const { req, res } = mockReqRes({ nome: 'X' }, { id: '1' });
+    await atualizar(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
   });
 });
 
