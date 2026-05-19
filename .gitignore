@@ -1,0 +1,60 @@
+# ─────────────────────────────────────────
+#  Café Grão — .gitignore (raiz do projeto)
+# ─────────────────────────────────────────
+
+# ── Dependências ──
+node_modules/
+**/node_modules/
+
+# ── Build / Dist ──
+dist/
+build/
+**/dist/
+**/build/
+
+# ── Variáveis de ambiente ──
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
+**/.env
+**/.env.local
+
+# ── Logs ──
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+log-backend.txt
+log-frontend.txt
+
+# ── Cache ──
+.cache/
+.parcel-cache/
+.vite/
+**/.vite/
+
+# ── Docker ──
+.dockerignore
+
+# ── Sistema Operacional ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDEs e Editores ──
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ── Cobertura de testes ──
+coverage/
+.nyc_output/
+
+# ── Misc ──
+*.tsbuildinfo
+.eslintcache

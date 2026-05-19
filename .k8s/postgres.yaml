@@ -1,4 +1,34 @@
 apiVersion: v1
+kind: Namespace
+metadata:
+  name: postgres-cafe
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: postgres-cafe
+type: Opaque
+stringData:
+  BD_USER: postgres
+  BD_PASSWORD: postgres
+  BD_NAME: cafe_grao_db
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: default
+type: Opaque
+stringData:
+  BD_USER: postgres
+  BD_PASSWORD: postgres
+  BD_NAME: cafe_grao_db
+
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-pvc
@@ -8,7 +38,7 @@ spec:
   resources:
     requests:
       storage: 1Gi
-      
+
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -27,7 +57,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:latest
+        image: postgres:16
         ports:
         - containerPort: 5432
         env:
@@ -53,3 +83,16 @@ spec:
       - name: postgres-data
         persistentVolumeClaim:
           claimName: postgres-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: postgres-cafe
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432

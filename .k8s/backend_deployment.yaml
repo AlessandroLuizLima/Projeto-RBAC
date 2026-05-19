@@ -15,15 +15,27 @@ spec:
       containers:
         - name: backend
           image: cafe-grao-backend:latest
+          imagePullPolicy: Never
           env:
             - name: DB_HOST
-              value: postgres
+              value: "postgres-service.postgres-cafe.svc.cluster.local"
+            - name: DB_PORT
+              value: "5432"
             - name: DB_NAME
-              value: cafe_grao
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: BD_NAME
             - name: DB_USER
-              value: postgres
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: BD_USER
             - name: DB_PASSWORD
-              value: postgres
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: BD_PASSWORD
             - name: PORT
               value: "3000"
           ports:
@@ -32,7 +44,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: backend
+  name: backend-service
 spec:
   selector:
     app: backend
