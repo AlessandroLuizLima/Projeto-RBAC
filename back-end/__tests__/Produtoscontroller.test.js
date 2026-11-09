@@ -1,4 +1,4 @@
-const { makeController } = require('./mocks/produtosController.mock');
+const { makeController } = require('./mocks/Produtoscontroller.mock');
 
 function makePool(queryFn, connectFn) {
   return { query: queryFn || jest.fn(), connect: connectFn || jest.fn() };

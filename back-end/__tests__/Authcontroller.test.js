@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 process.env.JWT_SECRET = 'segredo_de_teste';
 
-const { makeController } = require('./mocks/authController.mock');
+const { makeController } = require('./mocks/Authcontroller.mock');
 
 function makePool(queryFn) {
   return { query: queryFn };

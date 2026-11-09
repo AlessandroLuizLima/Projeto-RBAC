@@ -4,7 +4,7 @@ const pool = require('../config/database');
 async function listar(req, res) {
   try {
     let query = `
-      SELECT p.*, u.nome as atendente,
+      SELECT p.*, u.nome as atendente, m.numero as mesa,
         json_agg(json_build_object(
           'produto_id', ip.produto_id,
           'produto_nome', pr.nome,
@@ -13,6 +13,7 @@ async function listar(req, res) {
         )) as itens
       FROM pedidos p
       LEFT JOIN usuarios u ON u.id = p.usuario_id
+      LEFT JOIN mesas m ON m.id = p.mesa_id
       LEFT JOIN itens_pedido ip ON ip.pedido_id = p.id
       LEFT JOIN produtos pr ON pr.id = ip.produto_id
     `;
@@ -21,7 +22,7 @@ async function listar(req, res) {
       query += ` WHERE p.status IN ('pendente', 'em_preparo')`;
     }
 
-    query += ` GROUP BY p.id, u.nome ORDER BY p.created_at DESC`;
+    query += ` GROUP BY p.id, u.nome, m.numero ORDER BY p.created_at DESC`;
 
     const resultado = await pool.query(query);
     return res.json(resultado.rows);
@@ -34,7 +35,7 @@ async function listar(req, res) {
 async function buscarPorId(req, res) {
   try {
     const resultado = await pool.query(
-      `SELECT p.*, u.nome as atendente,
+      `SELECT p.*, u.nome as atendente, m.numero as mesa,
         json_agg(json_build_object(
           'produto_id', ip.produto_id,
           'produto_nome', pr.nome,
@@ -43,10 +44,11 @@ async function buscarPorId(req, res) {
         )) as itens
        FROM pedidos p
        LEFT JOIN usuarios u ON u.id = p.usuario_id
+       LEFT JOIN mesas m ON m.id = p.mesa_id
        LEFT JOIN itens_pedido ip ON ip.pedido_id = p.id
        LEFT JOIN produtos pr ON pr.id = ip.produto_id
        WHERE p.id = $1
-       GROUP BY p.id, u.nome`,
+       GROUP BY p.id, u.nome, m.numero`,
       [req.params.id]
     );
     if (!resultado.rows[0]) return res.status(404).json({ erro: 'Pedido não encontrado.' });

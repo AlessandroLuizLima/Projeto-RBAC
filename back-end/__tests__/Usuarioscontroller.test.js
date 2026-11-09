@@ -1,4 +1,4 @@
-const { makeController } = require('./mocks/usuariosController.mock');
+const { makeController } = require('./mocks/Usuarioscontroller.mock');
 
 function makePool(queryFn) { return { query: queryFn }; }
 function mockReqRes(body, params) {

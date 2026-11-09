@@ -1,4 +1,4 @@
-const { makeController } = require('./mocks/pedidosController.mock');
+const { makeController } = require('./mocks/Pedidoscontroller.mock');
 
 function makePool(queryFn, connectFn) {
   return { query: queryFn || jest.fn(), connect: connectFn || jest.fn() };
