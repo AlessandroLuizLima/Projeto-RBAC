@@ -1,5 +1,8 @@
+const crypto = require('crypto');
 const pool = require('../config/database');
 const bcrypt = require('bcryptjs');
+
+const TOTAL_MESAS_INICIAL = 10;
 
 async function initDB() {
   try {
@@ -65,6 +68,27 @@ async function initDB() {
       );
     `);
 
+    // ── Pedido por mesa (QR code) ───────────────────────────────────────────
+    // Cada mesa tem um número e um token secreto, que vai dentro do QR code.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS mesas (
+        id SERIAL PRIMARY KEY,
+        numero INTEGER UNIQUE NOT NULL CHECK (numero > 0),
+        token VARCHAR(64) NOT NULL,
+        ativa BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    // Migrações idempotentes (seguras para bancos que já existem)
+    await pool.query(`ALTER TABLE produtos ADD COLUMN IF NOT EXISTS imagem_url TEXT;`);
+    await pool.query(`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS mesa_id INTEGER REFERENCES mesas(id);`);
+    await pool.query(`
+      ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS origem VARCHAR(10) NOT NULL DEFAULT 'balcao'
+        CHECK (origem IN ('balcao', 'mesa'));
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_pedidos_mesa ON pedidos (mesa_id);`);
+
     console.log('Tabelas criadas com sucesso.');
 
     // Seed: Usuários iniciais
@@ -79,24 +103,38 @@ async function initDB() {
       ON CONFLICT (email) DO NOTHING;
     `, [senhaHash]);
 
-    // Seed: Produtos iniciais
-    await pool.query(`
-      INSERT INTO produtos (nome, descricao, preco, categoria)
-      VALUES
-        ('Espresso', 'Café espresso puro', 5.00, 'cafe'),
-        ('Cappuccino', 'Espresso com leite vaporizado', 9.00, 'cafe'),
-        ('Latte', 'Café com muito leite', 10.00, 'cafe'),
-        ('Croissant', 'Croissant de manteiga', 8.00, 'salgado'),
-        ('Bolo de Cenoura', 'Bolo caseiro com cobertura de chocolate', 7.00, 'doce')
-      ON CONFLICT DO NOTHING;
-    `);
+    // Seed: Produtos iniciais (só quando a tabela está vazia).
+    // Antes, o "ON CONFLICT DO NOTHING" não tinha efeito (não há UNIQUE em nome),
+    // então cada reinício do servidor duplicava os produtos.
+    const { rows: [{ total: totalProdutos }] } = await pool.query(
+      'SELECT COUNT(*)::int AS total FROM produtos'
+    );
+    if (totalProdutos === 0) {
+      await pool.query(`
+        INSERT INTO produtos (nome, descricao, preco, categoria)
+        VALUES
+          ('Espresso', 'Café espresso puro', 5.00, 'cafe'),
+          ('Cappuccino', 'Espresso com leite vaporizado', 9.00, 'cafe'),
+          ('Latte', 'Café com muito leite', 10.00, 'cafe'),
+          ('Croissant', 'Croissant de manteiga', 8.00, 'salgado'),
+          ('Bolo de Cenoura', 'Bolo caseiro com cobertura de chocolate', 7.00, 'doce');
+      `);
+    }
 
-    // Seed: Estoque inicial
+    // Seed: Estoque inicial (apenas para produtos que ainda não têm registro)
     await pool.query(`
       INSERT INTO estoque (produto_id, quantidade, quantidade_minima)
-      SELECT id, 50, 10 FROM produtos
-      ON CONFLICT DO NOTHING;
+      SELECT p.id, 50, 10 FROM produtos p
+      WHERE NOT EXISTS (SELECT 1 FROM estoque e WHERE e.produto_id = p.id);
     `);
+
+    // Seed: Mesas iniciais, cada uma com token aleatório
+    for (let numero = 1; numero <= TOTAL_MESAS_INICIAL; numero++) {
+      await pool.query(
+        'INSERT INTO mesas (numero, token) VALUES ($1, $2) ON CONFLICT (numero) DO NOTHING',
+        [numero, crypto.randomBytes(16).toString('hex')]
+      );
+    }
 
     console.log('Dados iniciais inseridos com sucesso.');
     console.log('');

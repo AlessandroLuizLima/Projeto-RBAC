@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 // (evita problemas com pool de banco em testes unitários)
 process.env.JWT_SECRET = 'segredo_de_teste';
 
-const { autenticar, autorizar } = require('./mocks/auth.middleware.mock');
+const { autenticar, autorizar } = require('./mocks/Auth.middleware.mock');
 
 // ─────────────────────────────────────────────
 // HELPER: cria req/res/next falsos

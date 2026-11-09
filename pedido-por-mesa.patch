@@ -1,0 +1,1415 @@
+From 175e0bdaab347c246cde726fbd3bfe4148c76c72 Mon Sep 17 00:00:00 2001
+From: dev <dev@local>
+Date: Sun, 8 Nov 2026 17:08:27 +0000
+Subject: [PATCH 1/2] =?UTF-8?q?fix(testes):=20corrige=20capitaliza=C3=A7?=
+ =?UTF-8?q?=C3=A3o=20dos=20imports=20de=20mocks=20(falhava=20no=20Linux/CI?=
+ =?UTF-8?q?)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ back-end/__tests__/Authcontroller.test.js     | 2 +-
+ back-end/__tests__/Estoquecontroller.test.js  | 2 +-
+ back-end/__tests__/Pedidoscontroller.test.js  | 2 +-
+ back-end/__tests__/Produtoscontroller.test.js | 2 +-
+ back-end/__tests__/Usuarioscontroller.test.js | 2 +-
+ back-end/__tests__/auth.middleware.test.js    | 2 +-
+ 6 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/back-end/__tests__/Authcontroller.test.js b/back-end/__tests__/Authcontroller.test.js
+index 7fd246f..d78590b 100644
+--- a/back-end/__tests__/Authcontroller.test.js
++++ b/back-end/__tests__/Authcontroller.test.js
+@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
+ const jwt = require('jsonwebtoken');
+ process.env.JWT_SECRET = 'segredo_de_teste';
+ 
+-const { makeController } = require('./mocks/authController.mock');
++const { makeController } = require('./mocks/Authcontroller.mock');
+ 
+ function makePool(queryFn) {
+   return { query: queryFn };
+diff --git a/back-end/__tests__/Estoquecontroller.test.js b/back-end/__tests__/Estoquecontroller.test.js
+index 0b0ef44..94d9639 100644
+--- a/back-end/__tests__/Estoquecontroller.test.js
++++ b/back-end/__tests__/Estoquecontroller.test.js
+@@ -1,4 +1,4 @@
+-const { makeController } = require('./mocks/estoqueController.mock');
++const { makeController } = require('./mocks/Estoquecontroller.mock');
+ 
+ function makePool(queryFn) { return { query: queryFn }; }
+ function mockReqRes(body = {}, params = {}) {
+diff --git a/back-end/__tests__/Pedidoscontroller.test.js b/back-end/__tests__/Pedidoscontroller.test.js
+index 113ff9c..50296e0 100644
+--- a/back-end/__tests__/Pedidoscontroller.test.js
++++ b/back-end/__tests__/Pedidoscontroller.test.js
+@@ -1,4 +1,4 @@
+-const { makeController } = require('./mocks/pedidosController.mock');
++const { makeController } = require('./mocks/Pedidoscontroller.mock');
+ 
+ function makePool(queryFn, connectFn) {
+   return { query: queryFn || jest.fn(), connect: connectFn || jest.fn() };
+diff --git a/back-end/__tests__/Produtoscontroller.test.js b/back-end/__tests__/Produtoscontroller.test.js
+index c55a91a..5a2a319 100644
+--- a/back-end/__tests__/Produtoscontroller.test.js
++++ b/back-end/__tests__/Produtoscontroller.test.js
+@@ -1,4 +1,4 @@
+-const { makeController } = require('./mocks/produtosController.mock');
++const { makeController } = require('./mocks/Produtoscontroller.mock');
+ 
+ function makePool(queryFn, connectFn) {
+   return { query: queryFn || jest.fn(), connect: connectFn || jest.fn() };
+diff --git a/back-end/__tests__/Usuarioscontroller.test.js b/back-end/__tests__/Usuarioscontroller.test.js
+index 42dce90..dceb864 100644
+--- a/back-end/__tests__/Usuarioscontroller.test.js
++++ b/back-end/__tests__/Usuarioscontroller.test.js
+@@ -1,4 +1,4 @@
+-const { makeController } = require('./mocks/usuariosController.mock');
++const { makeController } = require('./mocks/Usuarioscontroller.mock');
+ 
+ function makePool(queryFn) { return { query: queryFn }; }
+ function mockReqRes(body, params) {
+diff --git a/back-end/__tests__/auth.middleware.test.js b/back-end/__tests__/auth.middleware.test.js
+index bd94e5c..ba2b10b 100644
+--- a/back-end/__tests__/auth.middleware.test.js
++++ b/back-end/__tests__/auth.middleware.test.js
+@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
+ // (evita problemas com pool de banco em testes unitários)
+ process.env.JWT_SECRET = 'segredo_de_teste';
+ 
+-const { autenticar, autorizar } = require('./mocks/auth.middleware.mock');
++const { autenticar, autorizar } = require('./mocks/Auth.middleware.mock');
+ 
+ // ─────────────────────────────────────────────
+ // HELPER: cria req/res/next falsos
+-- 
+2.43.0
+
+
+From 6f86655634f866be90737da8efbee9ba941b1565 Mon Sep 17 00:00:00 2001
+From: dev <dev@local>
+Date: Sun, 8 Nov 2026 17:12:21 +0000
+Subject: [PATCH 2/2] feat(pedido-por-mesa): API publica para pedidos via QR
+ code por mesa
+
+- tabela mesas (numero + token); colunas produtos.imagem_url, pedidos.mesa_id e origem
+- rotas publicas /api/publico/mesa/:numero (cardapio, criar pedido, status) protegidas por token da mesa
+- rotas internas /api/mesas (listar/criar); painel de pedidos passa a mostrar a mesa
+- estoque travado com FOR UPDATE; preco sempre lido do banco; rate limit por mesa e por IP
+- fix(seed): produtos/estoque eram duplicados a cada reinicio do servidor
+- script limpar-duplicatas.sql e docs/PEDIDO-POR-MESA.md
+- 82 testes novos sobre o codigo real
+---
+ back-end/__tests__/mesa.middleware.test.js    |  86 +++++
+ back-end/__tests__/mesasController.test.js    |  78 ++++
+ back-end/__tests__/publicoController.test.js  | 352 ++++++++++++++++++
+ back-end/package-lock.json                    |  29 ++
+ back-end/package.json                         |   3 +-
+ back-end/scripts/limpar-duplicatas.sql        |  25 ++
+ back-end/server.js                            |  15 +
+ back-end/src/controllers/mesasController.js   |  44 +++
+ back-end/src/controllers/pedidosController.js |  10 +-
+ back-end/src/controllers/publicoController.js | 214 +++++++++++
+ back-end/src/db/init.js                       |  68 +++-
+ back-end/src/middlewares/mesa.js              |  48 +++
+ back-end/src/routes/mesas.js                  |  14 +
+ back-end/src/routes/publico.js                |  41 ++
+ docs/PEDIDO-POR-MESA.md                       |  46 +++
+ 15 files changed, 1053 insertions(+), 20 deletions(-)
+ create mode 100644 back-end/__tests__/mesa.middleware.test.js
+ create mode 100644 back-end/__tests__/mesasController.test.js
+ create mode 100644 back-end/__tests__/publicoController.test.js
+ create mode 100644 back-end/scripts/limpar-duplicatas.sql
+ create mode 100644 back-end/src/controllers/mesasController.js
+ create mode 100644 back-end/src/controllers/publicoController.js
+ create mode 100644 back-end/src/middlewares/mesa.js
+ create mode 100644 back-end/src/routes/mesas.js
+ create mode 100644 back-end/src/routes/publico.js
+ create mode 100644 docs/PEDIDO-POR-MESA.md
+
+diff --git a/back-end/__tests__/mesa.middleware.test.js b/back-end/__tests__/mesa.middleware.test.js
+new file mode 100644
+index 0000000..1abc1e4
+--- /dev/null
++++ b/back-end/__tests__/mesa.middleware.test.js
+@@ -0,0 +1,86 @@
++// Testa o middleware REAL (src/middlewares/mesa.js), sem cópia em /mocks.
++const { criarValidarMesa, tokensIguais } = require('../src/middlewares/mesa');
++
++const TOKEN = 'a'.repeat(32);
++
++function setup({ params = { numero: '7' }, headers = {}, query = {}, rows = [{ id: 3, numero: 7, token: TOKEN }], erro } = {}) {
++  const pool = {
++    query: erro ? jest.fn().mockRejectedValue(erro) : jest.fn().mockResolvedValue({ rows }),
++  };
++  const req = {
++    params,
++    query,
++    get: (nome) => headers[nome.toLowerCase()],
++  };
++  const res = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
++  const next = jest.fn();
++  return { pool, req, res, next, validarMesa: criarValidarMesa(pool) };
++}
++
++describe('tokensIguais()', () => {
++  test('iguais → true', () => expect(tokensIguais('abc', 'abc')).toBe(true));
++  test('diferentes → false', () => expect(tokensIguais('abc', 'abd')).toBe(false));
++  test('tamanhos diferentes → false (sem lançar erro)', () => expect(tokensIguais('abc', 'abcd')).toBe(false));
++});
++
++describe('validarMesa()', () => {
++  test('token válido no header: preenche req.mesa e chama next', async () => {
++    const { validarMesa, req, res, next } = setup({ headers: { 'x-mesa-token': TOKEN } });
++    await validarMesa(req, res, next);
++    expect(next).toHaveBeenCalledTimes(1);
++    expect(req.mesa).toEqual({ id: 3, numero: 7 });
++    expect(res.status).not.toHaveBeenCalled();
++  });
++
++  test('token válido na query (?t=) também funciona', async () => {
++    const { validarMesa, req, res, next } = setup({ query: { t: TOKEN } });
++    await validarMesa(req, res, next);
++    expect(next).toHaveBeenCalled();
++  });
++
++  test('só consulta mesas ativas', async () => {
++    const { validarMesa, req, res, next, pool } = setup({ headers: { 'x-mesa-token': TOKEN } });
++    await validarMesa(req, res, next);
++    expect(pool.query.mock.calls[0][0]).toMatch(/ativa = true/);
++    expect(pool.query.mock.calls[0][1]).toEqual([7]);
++  });
++
++  test('sem token → 401, sem consultar o banco', async () => {
++    const { validarMesa, req, res, next, pool } = setup();
++    await validarMesa(req, res, next);
++    expect(res.status).toHaveBeenCalledWith(401);
++    expect(next).not.toHaveBeenCalled();
++    expect(pool.query).not.toHaveBeenCalled();
++  });
++
++  test.each(['abc', '0', '-2', ''])('número de mesa inválido (%p) → 401', async (numero) => {
++    const { validarMesa, req, res, next } = setup({ params: { numero }, headers: { 'x-mesa-token': TOKEN } });
++    await validarMesa(req, res, next);
++    expect(res.status).toHaveBeenCalledWith(401);
++    expect(next).not.toHaveBeenCalled();
++  });
++
++  test('mesa inexistente/inativa → 401', async () => {
++    const { validarMesa, req, res, next } = setup({ rows: [], headers: { 'x-mesa-token': TOKEN } });
++    await validarMesa(req, res, next);
++    expect(res.status).toHaveBeenCalledWith(401);
++    expect(next).not.toHaveBeenCalled();
++  });
++
++  test('token errado → 401 com a MESMA mensagem de mesa inexistente', async () => {
++    const errado = setup({ headers: { 'x-mesa-token': 'b'.repeat(32) } });
++    await errado.validarMesa(errado.req, errado.res, errado.next);
++    const inexistente = setup({ rows: [], headers: { 'x-mesa-token': TOKEN } });
++    await inexistente.validarMesa(inexistente.req, inexistente.res, inexistente.next);
++
++    expect(errado.res.status).toHaveBeenCalledWith(401);
++    expect(errado.res.json.mock.calls[0][0]).toEqual(inexistente.res.json.mock.calls[0][0]);
++  });
++
++  test('erro de banco → 500', async () => {
++    const { validarMesa, req, res, next } = setup({ erro: new Error('DB'), headers: { 'x-mesa-token': TOKEN } });
++    await validarMesa(req, res, next);
++    expect(res.status).toHaveBeenCalledWith(500);
++    expect(next).not.toHaveBeenCalled();
++  });
++});
+diff --git a/back-end/__tests__/mesasController.test.js b/back-end/__tests__/mesasController.test.js
+new file mode 100644
+index 0000000..d670e9f
+--- /dev/null
++++ b/back-end/__tests__/mesasController.test.js
+@@ -0,0 +1,78 @@
++// Testa o controller REAL (src/controllers/mesasController.js).
++const { criarMesasController } = require('../src/controllers/mesasController');
++
++function setup(queryFn, body = {}) {
++  const pool = { query: queryFn };
++  const req = { body };
++  const res = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
++  return { ctrl: criarMesasController(pool), req, res, pool };
++}
++
++describe('mesasController.listar()', () => {
++  test('retorna as mesas', async () => {
++    const rows = [{ id: 1, numero: 1, token: 'x', ativa: true }];
++    const { ctrl, req, res } = setup(jest.fn().mockResolvedValue({ rows }));
++    await ctrl.listar(req, res);
++    expect(res.json).toHaveBeenCalledWith(rows);
++  });
++
++  test('erro → 500', async () => {
++    const { ctrl, req, res } = setup(jest.fn().mockRejectedValue(new Error('DB')));
++    await ctrl.listar(req, res);
++    expect(res.status).toHaveBeenCalledWith(500);
++  });
++});
++
++describe('mesasController.criar()', () => {
++  test('cria mesa com token aleatório de 32 hex', async () => {
++    const query = jest.fn().mockImplementation(async (_sql, [numero, token]) => ({
++      rows: [{ id: 9, numero, token, ativa: true }],
++    }));
++    const { ctrl, req, res } = setup(query, { numero: 12 });
++    await ctrl.criar(req, res);
++    expect(res.status).toHaveBeenCalledWith(201);
++    const criada = res.json.mock.calls[0][0];
++    expect(criada.numero).toBe(12);
++    expect(criada.token).toMatch(/^[0-9a-f]{32}$/);
++  });
++
++  test('tokens de mesas diferentes não se repetem', async () => {
++    const tokens = new Set();
++    const query = jest.fn().mockImplementation(async (_sql, [numero, token]) => {
++      tokens.add(token);
++      return { rows: [{ id: 1, numero, token, ativa: true }] };
++    });
++    for (let n = 1; n <= 20; n++) {
++      const { ctrl, req, res } = setup(query, { numero: n });
++      await ctrl.criar(req, res);
++    }
++    expect(tokens.size).toBe(20);
++  });
++
++  test.each([undefined, 0, -1, 1.5, '3', null])('número inválido (%p) → 400', async (numero) => {
++    const query = jest.fn();
++    const { ctrl, req, res } = setup(query, { numero });
++    await ctrl.criar(req, res);
++    expect(res.status).toHaveBeenCalledWith(400);
++    expect(query).not.toHaveBeenCalled();
++  });
++
++  test('sem body → 400', async () => {
++    const { ctrl, res } = setup(jest.fn());
++    await ctrl.criar({}, res);
++    expect(res.status).toHaveBeenCalledWith(400);
++  });
++
++  test('mesa duplicada (23505) → 409', async () => {
++    const erro = Object.assign(new Error('dup'), { code: '23505' });
++    const { ctrl, req, res } = setup(jest.fn().mockRejectedValue(erro), { numero: 3 });
++    await ctrl.criar(req, res);
++    expect(res.status).toHaveBeenCalledWith(409);
++  });
++
++  test('outro erro → 500', async () => {
++    const { ctrl, req, res } = setup(jest.fn().mockRejectedValue(new Error('DB')), { numero: 3 });
++    await ctrl.criar(req, res);
++    expect(res.status).toHaveBeenCalledWith(500);
++  });
++});
+diff --git a/back-end/__tests__/publicoController.test.js b/back-end/__tests__/publicoController.test.js
+new file mode 100644
+index 0000000..cd45db4
+--- /dev/null
++++ b/back-end/__tests__/publicoController.test.js
+@@ -0,0 +1,352 @@
++// Testa o controller REAL (src/controllers/publicoController.js).
++const {
++  criarPublicoController,
++  normalizarItens,
++  normalizarObservacao,
++  LIMITES,
++} = require('../src/controllers/publicoController');
++
++const MESA = { id: 3, numero: 7 };
++
++function mockRes() {
++  return { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
++}
++
++// Cliente de banco falso que "entende" as queries do controller.
++function fakeClient({ produtos = {}, estoque = {}, falharEm } = {}) {
++  const chamadas = [];
++  const client = {
++    chamadas,
++    release: jest.fn(),
++    query: jest.fn(async (sql, params = []) => {
++      const s = sql.replace(/\s+/g, ' ').trim();
++      chamadas.push({ sql: s, params });
++      if (falharEm && falharEm.test(s)) throw new Error('falha simulada');
++      if (/^SELECT id, nome, preco FROM produtos/.test(s)) {
++        const p = produtos[params[0]];
++        return { rows: p ? [{ id: params[0], ...p }] : [] };
++      }
++      if (/^SELECT quantidade FROM estoque/.test(s)) {
++        const q = estoque[params[0]];
++        return { rows: q === undefined ? [] : [{ quantidade: q }] };
++      }
++      if (/^INSERT INTO pedidos/.test(s)) {
++        return { rows: [{ id: 55, status: 'pendente', total: params[2], created_at: 'agora' }] };
++      }
++      return { rows: [] };
++    }),
++  };
++  return client;
++}
++
++function setupPedido(body, clientOpts) {
++  const client = fakeClient(clientOpts);
++  const pool = { connect: jest.fn().mockResolvedValue(client), query: jest.fn() };
++  const ctrl = criarPublicoController(pool);
++  const req = { body, mesa: MESA };
++  const res = mockRes();
++  return { ctrl, req, res, client, pool };
++}
++
++const comando = (client, nome) => client.chamadas.map((c) => c.sql).includes(nome);
++const houveCommit = (c) => comando(c, 'COMMIT');
++const houveRollback = (c) => comando(c, 'ROLLBACK');
++
++const PRODUTOS = { 1: { nome: 'Espresso', preco: '5.00' }, 2: { nome: 'Cappuccino', preco: '9.00' } };
++
++describe('normalizarItens()', () => {
++  test('junta o mesmo produto repetido e ordena por id', () => {
++    const r = normalizarItens([
++      { produto_id: 2, quantidade: 1 },
++      { produto_id: 1, quantidade: 1 },
++      { produto_id: 2, quantidade: 2 },
++    ]);
++    expect(r.itens).toEqual([
++      { produto_id: 1, quantidade: 1 },
++      { produto_id: 2, quantidade: 3 },
++    ]);
++  });
++
++  test.each([undefined, null, [], 'x', {}])('itens inválidos (%p) → erro', (v) => {
++    expect(normalizarItens(v).erro).toBeDefined();
++  });
++
++  test('item nulo → erro', () => expect(normalizarItens([null]).erro).toBeDefined());
++
++  test('mais itens diferentes que o limite → erro', () => {
++    const muitos = Array.from({ length: LIMITES.maxItensDistintos + 1 }, (_, i) => ({ produto_id: i + 1, quantidade: 1 }));
++    expect(normalizarItens(muitos).erro).toMatch(/no máximo/);
++  });
++
++  test('exatamente no limite de itens → ok', () => {
++    const lim = Array.from({ length: LIMITES.maxItensDistintos }, (_, i) => ({ produto_id: i + 1, quantidade: 1 }));
++    expect(normalizarItens(lim).itens).toHaveLength(LIMITES.maxItensDistintos);
++  });
++
++  test.each([0, -1, 1.5, '1', null, undefined])('produto_id inválido (%p)', (id) => {
++    expect(normalizarItens([{ produto_id: id, quantidade: 1 }]).erro).toMatch(/produto/i);
++  });
++
++  test.each([0, -1, 1.5, '2', null, undefined])('quantidade inválida (%p)', (q) => {
++    expect(normalizarItens([{ produto_id: 1, quantidade: q }]).erro).toMatch(/quantidade/i);
++  });
++
++  test('quantidade no limite → ok; acima → erro', () => {
++    expect(normalizarItens([{ produto_id: 1, quantidade: LIMITES.maxQuantidadePorItem }]).itens).toBeDefined();
++    expect(normalizarItens([{ produto_id: 1, quantidade: LIMITES.maxQuantidadePorItem + 1 }]).erro).toBeDefined();
++  });
++
++  test('limite vale DEPOIS de somar duplicados (não dá pra burlar repetindo o item)', () => {
++    const r = normalizarItens([
++      { produto_id: 1, quantidade: 6 },
++      { produto_id: 1, quantidade: 6 },
++    ]);
++    expect(r.erro).toBeDefined();
++  });
++});
++
++describe('normalizarObservacao()', () => {
++  test('ausente → null', () => {
++    expect(normalizarObservacao(undefined)).toEqual({ observacao: null });
++    expect(normalizarObservacao(null)).toEqual({ observacao: null });
++  });
++  test('faz trim e vazio vira null', () => {
++    expect(normalizarObservacao('  sem açúcar  ')).toEqual({ observacao: 'sem açúcar' });
++    expect(normalizarObservacao('   ')).toEqual({ observacao: null });
++  });
++  test('não-string → erro', () => expect(normalizarObservacao(123).erro).toBeDefined());
++  test('acima do limite → erro; no limite → ok', () => {
++    expect(normalizarObservacao('a'.repeat(LIMITES.maxObservacao + 1)).erro).toBeDefined();
++    expect(normalizarObservacao('a'.repeat(LIMITES.maxObservacao)).observacao).toHaveLength(LIMITES.maxObservacao);
++  });
++});
++
++describe('publicoController.cardapio()', () => {
++  test('devolve mesa e produtos, sem expor a quantidade exata do estoque', async () => {
++    const produtos = [{ id: 1, nome: 'Espresso', preco: '5.00', disponivel: true }];
++    const pool = { query: jest.fn().mockResolvedValue({ rows: produtos }) };
++    const res = mockRes();
++    await criarPublicoController(pool).cardapio({ mesa: MESA }, res);
++    expect(res.json).toHaveBeenCalledWith({ mesa: 7, produtos });
++    const sql = pool.query.mock.calls[0][0];
++    expect(sql).toMatch(/ativo = true/);
++    expect(sql).toMatch(/AS disponivel/);
++    expect(sql).not.toMatch(/SELECT p\.\*/);
++    expect(sql).not.toMatch(/e\.quantidade AS/);
++  });
++
++  test('erro → 500', async () => {
++    const pool = { query: jest.fn().mockRejectedValue(new Error('DB')) };
++    const res = mockRes();
++    await criarPublicoController(pool).cardapio({ mesa: MESA }, res);
++    expect(res.status).toHaveBeenCalledWith(500);
++  });
++});
++
++describe('publicoController.criarPedido()', () => {
++  test('sucesso: 201, total calculado pelo banco, commit e release', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 1 }, { produto_id: 2, quantidade: 2 }], observacao: 'Sem açúcar' },
++      { produtos: PRODUTOS, estoque: { 1: 10, 2: 10 } }
++    );
++    await ctrl.criarPedido(req, res);
++
++    expect(res.status).toHaveBeenCalledWith(201);
++    expect(res.json).toHaveBeenCalledWith({ id: 55, mesa: 7, status: 'pendente', total: 23 }); // 5 + 2×9
++    expect(houveCommit(client)).toBe(true);
++    expect(houveRollback(client)).toBe(false);
++    expect(client.release).toHaveBeenCalledTimes(1);
++
++    const insertPedido = client.chamadas.find((c) => /^INSERT INTO pedidos/.test(c.sql));
++    expect(insertPedido.params).toEqual([3, 'Sem açúcar', 23]); // mesa_id, observação, total
++    expect(insertPedido.sql).toMatch(/'mesa'/);
++  });
++
++  test('desconta o estoque de cada item', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 2, quantidade: 3 }] },
++      { produtos: PRODUTOS, estoque: { 2: 10 } }
++    );
++    await ctrl.criarPedido(req, res);
++    const upd = client.chamadas.find((c) => /^UPDATE estoque/.test(c.sql));
++    expect(upd.params).toEqual([3, 2]);
++  });
++
++  test('trava a linha de estoque com FOR UPDATE (evita vender o mesmo item 2×)', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 1 }] },
++      { produtos: PRODUTOS, estoque: { 1: 10 } }
++    );
++    await ctrl.criarPedido(req, res);
++    expect(client.chamadas.find((c) => /FROM estoque/.test(c.sql)).sql).toMatch(/FOR UPDATE$/);
++  });
++
++  test('IGNORA preço enviado pelo cliente: usa sempre o do banco', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 2, preco: 0.01, preco_unitario: 0.01 }], total: 0.02 },
++      { produtos: PRODUTOS, estoque: { 1: 10 } }
++    );
++    await ctrl.criarPedido(req, res);
++    const item = client.chamadas.find((c) => /^INSERT INTO itens_pedido/.test(c.sql));
++    expect(item.params).toEqual([55, 1, 2, '5.00']);
++    expect(res.json.mock.calls[0][0].total).toBe(10);
++  });
++
++  test('mesmo produto 2× no body vira UMA linha com a soma', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 1 }, { produto_id: 1, quantidade: 2 }] },
++      { produtos: PRODUTOS, estoque: { 1: 10 } }
++    );
++    await ctrl.criarPedido(req, res);
++    const linhas = client.chamadas.filter((c) => /^INSERT INTO itens_pedido/.test(c.sql));
++    expect(linhas).toHaveLength(1);
++    expect(linhas[0].params[2]).toBe(3);
++  });
++
++  test('total sem erro de ponto flutuante (0.10 × 3 = 0.30)', async () => {
++    const { ctrl, req, res } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 3 }] },
++      { produtos: { 1: { nome: 'Bala', preco: '0.10' } }, estoque: { 1: 10 } }
++    );
++    await ctrl.criarPedido(req, res);
++    expect(res.json.mock.calls[0][0].total).toBe(0.3);
++  });
++
++  test('observação vazia é gravada como null', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 1 }], observacao: '   ' },
++      { produtos: PRODUTOS, estoque: { 1: 10 } }
++    );
++    await ctrl.criarPedido(req, res);
++    expect(client.chamadas.find((c) => /^INSERT INTO pedidos/.test(c.sql)).params[1]).toBeNull();
++  });
++
++  test.each([
++    ['sem itens', { itens: [] }],
++    ['body vazio', undefined],
++    ['produto_id inválido', { itens: [{ produto_id: 'x', quantidade: 1 }] }],
++    ['quantidade acima do limite', { itens: [{ produto_id: 1, quantidade: 999 }] }],
++    ['observação grande demais', { itens: [{ produto_id: 1, quantidade: 1 }], observacao: 'a'.repeat(500) }],
++    ['observação não-string', { itens: [{ produto_id: 1, quantidade: 1 }], observacao: { a: 1 } }],
++  ])('400 sem tocar no banco: %s', async (_nome, body) => {
++    const { ctrl, req, res, pool } = setupPedido(body);
++    await ctrl.criarPedido(req, res);
++    expect(res.status).toHaveBeenCalledWith(400);
++    expect(pool.connect).not.toHaveBeenCalled();
++  });
++
++  test('produto inexistente/inativo → 400, rollback, nada gravado', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 99, quantidade: 1 }] },
++      { produtos: PRODUTOS, estoque: {} }
++    );
++    await ctrl.criarPedido(req, res);
++    expect(res.status).toHaveBeenCalledWith(400);
++    expect(houveRollback(client)).toBe(true);
++    expect(houveCommit(client)).toBe(false);
++    expect(client.chamadas.some((c) => /^INSERT/.test(c.sql))).toBe(false);
++    expect(client.release).toHaveBeenCalled();
++  });
++
++  test('estoque insuficiente → 409, rollback, nada gravado', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 5 }] },
++      { produtos: PRODUTOS, estoque: { 1: 2 } }
++    );
++    await ctrl.criarPedido(req, res);
++    expect(res.status).toHaveBeenCalledWith(409);
++    expect(houveRollback(client)).toBe(true);
++    expect(client.chamadas.some((c) => /^INSERT/.test(c.sql))).toBe(false);
++  });
++
++  test('produto sem registro de estoque → 409 (não estoura erro)', async () => {
++    const { ctrl, req, res } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 1 }] },
++      { produtos: PRODUTOS, estoque: {} }
++    );
++    await ctrl.criarPedido(req, res);
++    expect(res.status).toHaveBeenCalledWith(409);
++  });
++
++  test('item 2 sem estoque derruba o pedido inteiro (nada do item 1 é gravado)', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 1 }, { produto_id: 2, quantidade: 1 }] },
++      { produtos: PRODUTOS, estoque: { 1: 10, 2: 0 } }
++    );
++    await ctrl.criarPedido(req, res);
++    expect(res.status).toHaveBeenCalledWith(409);
++    expect(client.chamadas.some((c) => /^UPDATE estoque|^INSERT/.test(c.sql))).toBe(false);
++  });
++
++  test('erro inesperado no meio → 500, rollback e release', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 1 }] },
++      { produtos: PRODUTOS, estoque: { 1: 10 }, falharEm: /^INSERT INTO itens_pedido/ }
++    );
++    jest.spyOn(console, 'error').mockImplementation(() => {});
++    await ctrl.criarPedido(req, res);
++    expect(res.status).toHaveBeenCalledWith(500);
++    expect(houveRollback(client)).toBe(true);
++    expect(houveCommit(client)).toBe(false);
++    expect(client.release).toHaveBeenCalledTimes(1);
++    console.error.mockRestore();
++  });
++
++  test('se o próprio ROLLBACK falhar, ainda responde 500 e libera a conexão', async () => {
++    const { ctrl, req, res, client } = setupPedido(
++      { itens: [{ produto_id: 1, quantidade: 1 }] },
++      { produtos: PRODUTOS, estoque: { 1: 10 }, falharEm: /^INSERT INTO pedidos|^ROLLBACK/ }
++    );
++    jest.spyOn(console, 'error').mockImplementation(() => {});
++    await ctrl.criarPedido(req, res);
++    expect(res.status).toHaveBeenCalledWith(500);
++    expect(client.release).toHaveBeenCalledTimes(1);
++    console.error.mockRestore();
++  });
++
++  test('falha ao obter conexão do pool → 500 (e não tenta liberar nada)', async () => {
++    const pool = { connect: jest.fn().mockRejectedValue(new Error('pool cheio')) };
++    const res = mockRes();
++    jest.spyOn(console, 'error').mockImplementation(() => {});
++    await criarPublicoController(pool).criarPedido(
++      { body: { itens: [{ produto_id: 1, quantidade: 1 }] }, mesa: MESA },
++      res
++    );
++    expect(res.status).toHaveBeenCalledWith(500);
++    console.error.mockRestore();
++  });
++});
++
++describe('publicoController.statusPedido()', () => {
++  test('retorna o pedido da própria mesa (filtra por id E mesa_id)', async () => {
++    const pedido = { id: 55, status: 'em_preparo', itens: [] };
++    const pool = { query: jest.fn().mockResolvedValue({ rows: [pedido] }) };
++    const res = mockRes();
++    await criarPublicoController(pool).statusPedido({ params: { id: '55' }, mesa: MESA }, res);
++    expect(res.json).toHaveBeenCalledWith(pedido);
++    expect(pool.query.mock.calls[0][1]).toEqual([55, 3]);
++    expect(pool.query.mock.calls[0][0]).toMatch(/p\.mesa_id = \$2/);
++  });
++
++  test('pedido de outra mesa/inexistente → 404', async () => {
++    const pool = { query: jest.fn().mockResolvedValue({ rows: [] }) };
++    const res = mockRes();
++    await criarPublicoController(pool).statusPedido({ params: { id: '55' }, mesa: MESA }, res);
++    expect(res.status).toHaveBeenCalledWith(404);
++  });
++
++  test.each(['abc', '0', '-1'])('id inválido (%p) → 404 sem consultar o banco', async (id) => {
++    const pool = { query: jest.fn() };
++    const res = mockRes();
++    await criarPublicoController(pool).statusPedido({ params: { id }, mesa: MESA }, res);
++    expect(res.status).toHaveBeenCalledWith(404);
++    expect(pool.query).not.toHaveBeenCalled();
++  });
++
++  test('erro → 500', async () => {
++    const pool = { query: jest.fn().mockRejectedValue(new Error('DB')) };
++    const res = mockRes();
++    await criarPublicoController(pool).statusPedido({ params: { id: '1' }, mesa: MESA }, res);
++    expect(res.status).toHaveBeenCalledWith(500);
++  });
++});
+diff --git a/back-end/package-lock.json b/back-end/package-lock.json
+index 1bd3c16..e3f6588 100644
+--- a/back-end/package-lock.json
++++ b/back-end/package-lock.json
+@@ -13,6 +13,7 @@
+         "cors": "^2.8.6",
+         "dotenv": "^17.4.0",
+         "express": "^5.2.1",
++        "express-rate-limit": "^8.7.3",
+         "jsonwebtoken": "^9.0.3",
+         "pg": "^8.20.0"
+       },
+@@ -2046,6 +2047,25 @@
+         "url": "https://opencollective.com/express"
+       }
+     },
++    "node_modules/express-rate-limit": {
++      "version": "8.7.3",
++      "resolved": "https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.7.3.tgz",
++      "integrity": "sha512-zPLqDI2f0gV2WmGnacLf9XSSqn4VldRyP5LCzOwx0BKH40mO6+2PCFkoSsRO2jePx87/Kf6NUF6P2QOTKXHbQA==",
++      "license": "MIT",
++      "dependencies": {
++        "debug": "^4.4.3",
++        "ip-address": "^10.2.0"
++      },
++      "engines": {
++        "node": ">= 16"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/express-rate-limit"
++      },
++      "peerDependencies": {
++        "express": ">= 4.11"
++      }
++    },
+     "node_modules/fast-json-stable-stringify": {
+       "version": "2.1.0",
+       "resolved": "https://registry.npmjs.org/fast-json-stable-stringify/-/fast-json-stable-stringify-2.1.0.tgz",
+@@ -2436,6 +2456,15 @@
+       "integrity": "sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==",
+       "license": "ISC"
+     },
++    "node_modules/ip-address": {
++      "version": "10.7.6",
++      "resolved": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.6.tgz",
++      "integrity": "sha512-00LYkM6byILa9eQIx6qoaXCM40xTLd56AZ4vyaPW3YTyb49VZYPo5xsiAq4tuQ54GH4R7gVdYScJ1B7B77PuTg==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 12"
++      }
++    },
+     "node_modules/ipaddr.js": {
+       "version": "1.9.1",
+       "resolved": "https://registry.npmjs.org/ipaddr.js/-/ipaddr.js-1.9.1.tgz",
+diff --git a/back-end/package.json b/back-end/package.json
+index 52e0a9f..3557920 100644
+--- a/back-end/package.json
++++ b/back-end/package.json
+@@ -17,6 +17,7 @@
+     "cors": "^2.8.6",
+     "dotenv": "^17.4.0",
+     "express": "^5.2.1",
++    "express-rate-limit": "^8.7.3",
+     "jsonwebtoken": "^9.0.3",
+     "pg": "^8.20.0"
+   },
+@@ -24,7 +25,7 @@
+     "jest": "^29.7.0",
+     "nodemon": "^3.0.2"
+   },
+-"jest": {
++  "jest": {
+     "testMatch": [
+       "**/__tests__/**/*.test.js"
+     ],
+diff --git a/back-end/scripts/limpar-duplicatas.sql b/back-end/scripts/limpar-duplicatas.sql
+new file mode 100644
+index 0000000..b7597fd
+--- /dev/null
++++ b/back-end/scripts/limpar-duplicatas.sql
+@@ -0,0 +1,25 @@
++-- Limpa produtos e estoque duplicados pelo seed antigo (que rodava a cada
++-- reinício do servidor). Rode UMA vez, em bancos que já existiam antes da correção:
++--
++--   psql -U postgres -d cafe_grao_db -f back-end/scripts/limpar-duplicatas.sql
++--
++-- Regras de segurança:
++--  * mantém sempre o registro de MENOR id;
++--  * só remove produto repetido que NUNCA foi vendido (sem itens_pedido);
++--  * tudo dentro de uma transação.
++BEGIN;
++
++DELETE FROM produtos p
++USING produtos mantido
++WHERE p.nome = mantido.nome
++  AND p.categoria = mantido.categoria
++  AND p.preco = mantido.preco
++  AND p.id > mantido.id
++  AND NOT EXISTS (SELECT 1 FROM itens_pedido ip WHERE ip.produto_id = p.id);
++
++DELETE FROM estoque e
++USING estoque mantido
++WHERE e.produto_id = mantido.produto_id
++  AND e.id > mantido.id;
++
++COMMIT;
+diff --git a/back-end/server.js b/back-end/server.js
+index b8576f3..422284e 100644
+--- a/back-end/server.js
++++ b/back-end/server.js
+@@ -8,10 +8,16 @@ const usuariosRoutes = require('./src/routes/usuarios');
+ const produtosRoutes = require('./src/routes/produtos');
+ const estoqueRoutes = require('./src/routes/estoque');
+ const pedidosRoutes = require('./src/routes/pedidos');
++const mesasRoutes = require('./src/routes/mesas');
++const publicoRoutes = require('./src/routes/publico');
+ 
+ const app = express();
+ const PORT = process.env.PORT || 3000;
+ 
++// Atrás de proxy/ingress (ex.: Kubernetes), informe quantos proxies existem na frente
++// (TRUST_PROXY=1) para o rate limit enxergar o IP real do cliente.
++if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY));
++
+ app.use(cors());
+ app.use(express.json());
+ 
+@@ -21,6 +27,10 @@ app.use('/api/usuarios', usuariosRoutes);
+ app.use('/api/produtos', produtosRoutes);
+ app.use('/api/estoque', estoqueRoutes);
+ app.use('/api/pedidos', pedidosRoutes);
++app.use('/api/mesas', mesasRoutes);
++
++// Rotas públicas (cliente na mesa, sem login, protegidas pelo token da mesa)
++app.use('/api/publico', publicoRoutes);
+ 
+ // Health check
+ app.get('/health', (req, res) => res.json({ status: 'ok', servico: 'Café Grão API' }));
+@@ -52,6 +62,11 @@ async function start() {
+     console.log('  POST   /api/pedidos');
+     console.log('  PUT    /api/pedidos/:id/status');
+     console.log('  DELETE /api/pedidos/:id');
++    console.log('  GET    /api/mesas');
++    console.log('  POST   /api/mesas');
++    console.log('  GET    /api/publico/mesa/:numero/cardapio');
++    console.log('  POST   /api/publico/mesa/:numero/pedidos');
++    console.log('  GET    /api/publico/mesa/:numero/pedidos/:id');
+     console.log('Middleware de autenticação JWT ativo.');
+     console.log(`Middleware de CORS configurado.`);
+     console.log('Aguardando requisições...');
+diff --git a/back-end/src/controllers/mesasController.js b/back-end/src/controllers/mesasController.js
+new file mode 100644
+index 0000000..bb5fbf4
+--- /dev/null
++++ b/back-end/src/controllers/mesasController.js
+@@ -0,0 +1,44 @@
++'use strict';
++
++const crypto = require('crypto');
++
++// Gestão das mesas (área interna, com login).
++function criarMesasController(pool) {
++  // GET /mesas - proprietario e gerente (o token é usado para gerar o QR code)
++  async function listar(req, res) {
++    try {
++      const resultado = await pool.query(
++        'SELECT id, numero, token, ativa FROM mesas ORDER BY numero'
++      );
++      return res.json(resultado.rows);
++    } catch (err) {
++      return res.status(500).json({ erro: 'Erro ao listar mesas.' });
++    }
++  }
++
++  // POST /mesas - só proprietario
++  async function criar(req, res) {
++    const numero = req.body && req.body.numero;
++    if (!Number.isInteger(numero) || numero <= 0) {
++      return res.status(400).json({ erro: 'Número da mesa deve ser um inteiro positivo.' });
++    }
++
++    try {
++      const token = crypto.randomBytes(16).toString('hex');
++      const resultado = await pool.query(
++        'INSERT INTO mesas (numero, token) VALUES ($1, $2) RETURNING id, numero, token, ativa',
++        [numero, token]
++      );
++      return res.status(201).json(resultado.rows[0]);
++    } catch (err) {
++      if (err.code === '23505') {
++        return res.status(409).json({ erro: `A mesa ${numero} já existe.` });
++      }
++      return res.status(500).json({ erro: 'Erro ao criar mesa.' });
++    }
++  }
++
++  return { listar, criar };
++}
++
++module.exports = { criarMesasController };
+diff --git a/back-end/src/controllers/pedidosController.js b/back-end/src/controllers/pedidosController.js
+index 3d392bd..5cb9349 100644
+--- a/back-end/src/controllers/pedidosController.js
++++ b/back-end/src/controllers/pedidosController.js
+@@ -4,7 +4,7 @@ const pool = require('../config/database');
+ async function listar(req, res) {
+   try {
+     let query = `
+-      SELECT p.*, u.nome as atendente,
++      SELECT p.*, u.nome as atendente, m.numero as mesa,
+         json_agg(json_build_object(
+           'produto_id', ip.produto_id,
+           'produto_nome', pr.nome,
+@@ -13,6 +13,7 @@ async function listar(req, res) {
+         )) as itens
+       FROM pedidos p
+       LEFT JOIN usuarios u ON u.id = p.usuario_id
++      LEFT JOIN mesas m ON m.id = p.mesa_id
+       LEFT JOIN itens_pedido ip ON ip.pedido_id = p.id
+       LEFT JOIN produtos pr ON pr.id = ip.produto_id
+     `;
+@@ -21,7 +22,7 @@ async function listar(req, res) {
+       query += ` WHERE p.status IN ('pendente', 'em_preparo')`;
+     }
+ 
+-    query += ` GROUP BY p.id, u.nome ORDER BY p.created_at DESC`;
++    query += ` GROUP BY p.id, u.nome, m.numero ORDER BY p.created_at DESC`;
+ 
+     const resultado = await pool.query(query);
+     return res.json(resultado.rows);
+@@ -34,7 +35,7 @@ async function listar(req, res) {
+ async function buscarPorId(req, res) {
+   try {
+     const resultado = await pool.query(
+-      `SELECT p.*, u.nome as atendente,
++      `SELECT p.*, u.nome as atendente, m.numero as mesa,
+         json_agg(json_build_object(
+           'produto_id', ip.produto_id,
+           'produto_nome', pr.nome,
+@@ -43,10 +44,11 @@ async function buscarPorId(req, res) {
+         )) as itens
+        FROM pedidos p
+        LEFT JOIN usuarios u ON u.id = p.usuario_id
++       LEFT JOIN mesas m ON m.id = p.mesa_id
+        LEFT JOIN itens_pedido ip ON ip.pedido_id = p.id
+        LEFT JOIN produtos pr ON pr.id = ip.produto_id
+        WHERE p.id = $1
+-       GROUP BY p.id, u.nome`,
++       GROUP BY p.id, u.nome, m.numero`,
+       [req.params.id]
+     );
+     if (!resultado.rows[0]) return res.status(404).json({ erro: 'Pedido não encontrado.' });
+diff --git a/back-end/src/controllers/publicoController.js b/back-end/src/controllers/publicoController.js
+new file mode 100644
+index 0000000..e137406
+--- /dev/null
++++ b/back-end/src/controllers/publicoController.js
+@@ -0,0 +1,214 @@
++'use strict';
++
++// Rotas públicas: usadas pelo cliente na mesa, SEM login.
++// A identificação vem do token da mesa (ver middlewares/mesa.js).
++
++const LIMITES = Object.freeze({
++  maxItensDistintos: 20,
++  maxQuantidadePorItem: 10,
++  maxObservacao: 200,
++});
++
++// Valida os itens e junta duplicados (mesmo produto 2x vira 1 linha com a soma).
++// Devolve ordenado por produto_id: a ordem fixa evita deadlock entre pedidos
++// simultâneos que travam as mesmas linhas de estoque.
++function normalizarItens(itens) {
++  if (!Array.isArray(itens) || itens.length === 0) {
++    return { erro: 'O pedido deve ter pelo menos um item.' };
++  }
++  if (itens.length > LIMITES.maxItensDistintos) {
++    return { erro: `O pedido pode ter no máximo ${LIMITES.maxItensDistintos} itens diferentes.` };
++  }
++
++  const agrupados = new Map();
++  for (const item of itens) {
++    const produtoId = item && item.produto_id;
++    const quantidade = item && item.quantidade;
++
++    if (!Number.isInteger(produtoId) || produtoId <= 0) {
++      return { erro: 'Item com produto inválido.' };
++    }
++    if (!Number.isInteger(quantidade) || quantidade <= 0) {
++      return { erro: 'Item com quantidade inválida.' };
++    }
++    agrupados.set(produtoId, (agrupados.get(produtoId) || 0) + quantidade);
++  }
++
++  for (const quantidade of agrupados.values()) {
++    if (quantidade > LIMITES.maxQuantidadePorItem) {
++      return { erro: `Quantidade máxima por item: ${LIMITES.maxQuantidadePorItem}.` };
++    }
++  }
++
++  const lista = [...agrupados.entries()]
++    .map(([produto_id, quantidade]) => ({ produto_id, quantidade }))
++    .sort((a, b) => a.produto_id - b.produto_id);
++
++  return { itens: lista };
++}
++
++function normalizarObservacao(observacao) {
++  if (observacao === undefined || observacao === null) return { observacao: null };
++  if (typeof observacao !== 'string') return { erro: 'Observação inválida.' };
++
++  const texto = observacao.trim();
++  if (texto.length > LIMITES.maxObservacao) {
++    return { erro: `A observação pode ter no máximo ${LIMITES.maxObservacao} caracteres.` };
++  }
++  return { observacao: texto === '' ? null : texto };
++}
++
++async function rollbackSeguro(client) {
++  try {
++    await client.query('ROLLBACK');
++  } catch (_) {
++    // Se o rollback falhar, o erro original é mais importante.
++  }
++}
++
++function criarPublicoController(pool) {
++  // GET /publico/mesa/:numero/cardapio
++  async function cardapio(req, res) {
++    try {
++      const resultado = await pool.query(
++        `SELECT p.id, p.nome, p.descricao, p.preco, p.categoria, p.imagem_url,
++                COALESCE(e.quantidade, 0) > 0 AS disponivel
++         FROM produtos p
++         LEFT JOIN estoque e ON e.produto_id = p.id
++         WHERE p.ativo = true
++         ORDER BY p.categoria, p.nome`
++      );
++      return res.json({ mesa: req.mesa.numero, produtos: resultado.rows });
++    } catch (err) {
++      return res.status(500).json({ erro: 'Erro ao carregar o cardápio.' });
++    }
++  }
++
++  // POST /publico/mesa/:numero/pedidos
++  // Body: { itens: [{ produto_id, quantidade }], observacao? }
++  // O preço NUNCA vem do cliente: é sempre lido do banco.
++  async function criarPedido(req, res) {
++    const body = req.body || {};
++
++    const validacaoItens = normalizarItens(body.itens);
++    if (validacaoItens.erro) return res.status(400).json({ erro: validacaoItens.erro });
++
++    const validacaoObs = normalizarObservacao(body.observacao);
++    if (validacaoObs.erro) return res.status(400).json({ erro: validacaoObs.erro });
++
++    const { itens } = validacaoItens;
++    const { observacao } = validacaoObs;
++
++    let client;
++    try {
++      client = await pool.connect();
++      await client.query('BEGIN');
++
++      // 1) Valida tudo e trava o estoque (FOR UPDATE) antes de gravar qualquer coisa.
++      const linhas = [];
++      let totalCentavos = 0;
++
++      for (const item of itens) {
++        const produto = await client.query(
++          'SELECT id, nome, preco FROM produtos WHERE id = $1 AND ativo = true',
++          [item.produto_id]
++        );
++        if (!produto.rows[0]) {
++          await rollbackSeguro(client);
++          return res.status(400).json({ erro: `Produto ${item.produto_id} indisponível.` });
++        }
++
++        const estoque = await client.query(
++          'SELECT quantidade FROM estoque WHERE produto_id = $1 FOR UPDATE',
++          [item.produto_id]
++        );
++        const disponivel = estoque.rows[0] ? estoque.rows[0].quantidade : 0;
++        if (disponivel < item.quantidade) {
++          await rollbackSeguro(client);
++          return res.status(409).json({
++            erro: `${produto.rows[0].nome} está indisponível ou sem estoque suficiente.`,
++          });
++        }
++
++        const precoUnitario = produto.rows[0].preco;
++        totalCentavos += Math.round(Number(precoUnitario) * 100) * item.quantidade;
++        linhas.push({ produto_id: item.produto_id, quantidade: item.quantidade, precoUnitario });
++      }
++
++      const total = totalCentavos / 100;
++
++      // 2) Grava o pedido, os itens e desconta o estoque.
++      const pedido = await client.query(
++        `INSERT INTO pedidos (mesa_id, origem, observacao, total)
++         VALUES ($1, 'mesa', $2, $3)
++         RETURNING id, status, total, created_at`,
++        [req.mesa.id, observacao, total]
++      );
++      const pedidoId = pedido.rows[0].id;
++
++      for (const linha of linhas) {
++        await client.query(
++          `INSERT INTO itens_pedido (pedido_id, produto_id, quantidade, preco_unitario)
++           VALUES ($1, $2, $3, $4)`,
++          [pedidoId, linha.produto_id, linha.quantidade, linha.precoUnitario]
++        );
++        await client.query(
++          'UPDATE estoque SET quantidade = quantidade - $1, updated_at = NOW() WHERE produto_id = $2',
++          [linha.quantidade, linha.produto_id]
++        );
++      }
++
++      await client.query('COMMIT');
++
++      return res.status(201).json({
++        id: pedidoId,
++        mesa: req.mesa.numero,
++        status: pedido.rows[0].status,
++        total,
++      });
++    } catch (err) {
++      if (client) await rollbackSeguro(client);
++      console.error('Erro ao criar pedido público:', err.message);
++      return res.status(500).json({ erro: 'Erro ao criar pedido.' });
++    } finally {
++      if (client) client.release();
++    }
++  }
++
++  // GET /publico/mesa/:numero/pedidos/:id
++  // O cliente só enxerga pedidos DA PRÓPRIA MESA (filtro por mesa_id).
++  async function statusPedido(req, res) {
++    const id = Number.parseInt(req.params.id, 10);
++    if (!Number.isInteger(id) || id <= 0) {
++      return res.status(404).json({ erro: 'Pedido não encontrado.' });
++    }
++
++    try {
++      const resultado = await pool.query(
++        `SELECT p.id, p.status, p.total, p.observacao, p.created_at, p.updated_at,
++                COALESCE(
++                  json_agg(json_build_object(
++                    'produto_nome', pr.nome,
++                    'quantidade', ip.quantidade,
++                    'preco_unitario', ip.preco_unitario
++                  )) FILTER (WHERE ip.id IS NOT NULL),
++                  '[]'::json
++                ) AS itens
++         FROM pedidos p
++         LEFT JOIN itens_pedido ip ON ip.pedido_id = p.id
++         LEFT JOIN produtos pr ON pr.id = ip.produto_id
++         WHERE p.id = $1 AND p.mesa_id = $2
++         GROUP BY p.id`,
++        [id, req.mesa.id]
++      );
++      if (!resultado.rows[0]) return res.status(404).json({ erro: 'Pedido não encontrado.' });
++      return res.json(resultado.rows[0]);
++    } catch (err) {
++      return res.status(500).json({ erro: 'Erro ao buscar pedido.' });
++    }
++  }
++
++  return { cardapio, criarPedido, statusPedido };
++}
++
++module.exports = { criarPublicoController, normalizarItens, normalizarObservacao, LIMITES };
+diff --git a/back-end/src/db/init.js b/back-end/src/db/init.js
+index f9238e9..01293a2 100644
+--- a/back-end/src/db/init.js
++++ b/back-end/src/db/init.js
+@@ -1,6 +1,9 @@
++const crypto = require('crypto');
+ const pool = require('../config/database');
+ const bcrypt = require('bcryptjs');
+ 
++const TOTAL_MESAS_INICIAL = 10;
++
+ async function initDB() {
+   try {
+     // Tabela de usuários
+@@ -65,6 +68,27 @@ async function initDB() {
+       );
+     `);
+ 
++    // ── Pedido por mesa (QR code) ───────────────────────────────────────────
++    // Cada mesa tem um número e um token secreto, que vai dentro do QR code.
++    await pool.query(`
++      CREATE TABLE IF NOT EXISTS mesas (
++        id SERIAL PRIMARY KEY,
++        numero INTEGER UNIQUE NOT NULL CHECK (numero > 0),
++        token VARCHAR(64) NOT NULL,
++        ativa BOOLEAN NOT NULL DEFAULT true,
++        created_at TIMESTAMP DEFAULT NOW()
++      );
++    `);
++
++    // Migrações idempotentes (seguras para bancos que já existem)
++    await pool.query(`ALTER TABLE produtos ADD COLUMN IF NOT EXISTS imagem_url TEXT;`);
++    await pool.query(`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS mesa_id INTEGER REFERENCES mesas(id);`);
++    await pool.query(`
++      ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS origem VARCHAR(10) NOT NULL DEFAULT 'balcao'
++        CHECK (origem IN ('balcao', 'mesa'));
++    `);
++    await pool.query(`CREATE INDEX IF NOT EXISTS idx_pedidos_mesa ON pedidos (mesa_id);`);
++
+     console.log('Tabelas criadas com sucesso.');
+ 
+     // Seed: Usuários iniciais
+@@ -79,25 +103,39 @@ async function initDB() {
+       ON CONFLICT (email) DO NOTHING;
+     `, [senhaHash]);
+ 
+-    // Seed: Produtos iniciais
+-    await pool.query(`
+-      INSERT INTO produtos (nome, descricao, preco, categoria)
+-      VALUES
+-        ('Espresso', 'Café espresso puro', 5.00, 'cafe'),
+-        ('Cappuccino', 'Espresso com leite vaporizado', 9.00, 'cafe'),
+-        ('Latte', 'Café com muito leite', 10.00, 'cafe'),
+-        ('Croissant', 'Croissant de manteiga', 8.00, 'salgado'),
+-        ('Bolo de Cenoura', 'Bolo caseiro com cobertura de chocolate', 7.00, 'doce')
+-      ON CONFLICT DO NOTHING;
+-    `);
++    // Seed: Produtos iniciais (só quando a tabela está vazia).
++    // Antes, o "ON CONFLICT DO NOTHING" não tinha efeito (não há UNIQUE em nome),
++    // então cada reinício do servidor duplicava os produtos.
++    const { rows: [{ total: totalProdutos }] } = await pool.query(
++      'SELECT COUNT(*)::int AS total FROM produtos'
++    );
++    if (totalProdutos === 0) {
++      await pool.query(`
++        INSERT INTO produtos (nome, descricao, preco, categoria)
++        VALUES
++          ('Espresso', 'Café espresso puro', 5.00, 'cafe'),
++          ('Cappuccino', 'Espresso com leite vaporizado', 9.00, 'cafe'),
++          ('Latte', 'Café com muito leite', 10.00, 'cafe'),
++          ('Croissant', 'Croissant de manteiga', 8.00, 'salgado'),
++          ('Bolo de Cenoura', 'Bolo caseiro com cobertura de chocolate', 7.00, 'doce');
++      `);
++    }
+ 
+-    // Seed: Estoque inicial
++    // Seed: Estoque inicial (apenas para produtos que ainda não têm registro)
+     await pool.query(`
+       INSERT INTO estoque (produto_id, quantidade, quantidade_minima)
+-      SELECT id, 50, 10 FROM produtos
+-      ON CONFLICT DO NOTHING;
++      SELECT p.id, 50, 10 FROM produtos p
++      WHERE NOT EXISTS (SELECT 1 FROM estoque e WHERE e.produto_id = p.id);
+     `);
+ 
++    // Seed: Mesas iniciais, cada uma com token aleatório
++    for (let numero = 1; numero <= TOTAL_MESAS_INICIAL; numero++) {
++      await pool.query(
++        'INSERT INTO mesas (numero, token) VALUES ($1, $2) ON CONFLICT (numero) DO NOTHING',
++        [numero, crypto.randomBytes(16).toString('hex')]
++      );
++    }
++
+     console.log('Dados iniciais inseridos com sucesso.');
+     console.log('');
+     console.log('Usuários criados (senha: 123456):');
+@@ -110,4 +148,4 @@ async function initDB() {
+   }
+ }
+ 
+-module.exports = initDB;
+\ No newline at end of file
++module.exports = initDB;
+diff --git a/back-end/src/middlewares/mesa.js b/back-end/src/middlewares/mesa.js
+new file mode 100644
+index 0000000..89a7269
+--- /dev/null
++++ b/back-end/src/middlewares/mesa.js
+@@ -0,0 +1,48 @@
++'use strict';
++
++const crypto = require('crypto');
++
++// Comparação em tempo constante, para não vazar o token por diferença de tempo.
++function tokensIguais(esperado, recebido) {
++  const a = Buffer.from(String(esperado));
++  const b = Buffer.from(String(recebido));
++  return a.length === b.length && crypto.timingSafeEqual(a, b);
++}
++
++/**
++ * Valida a mesa das rotas públicas (/api/publico/mesa/:numero/...).
++ * O token vem no header `x-mesa-token` (ou na query `?t=`), e é o mesmo que
++ * está dentro do QR code da mesa.
++ *
++ * Mesa inexistente, inativa ou token errado respondem a MESMA mensagem, para
++ * não revelar quais mesas existem.
++ */
++function criarValidarMesa(pool) {
++  return async function validarMesa(req, res, next) {
++    const numero = Number.parseInt(req.params.numero, 10);
++    const token = req.get('x-mesa-token') || req.query.t;
++
++    if (!Number.isInteger(numero) || numero <= 0 || !token) {
++      return res.status(401).json({ erro: 'Acesso à mesa não autorizado.' });
++    }
++
++    try {
++      const resultado = await pool.query(
++        'SELECT id, numero, token FROM mesas WHERE numero = $1 AND ativa = true',
++        [numero]
++      );
++      const mesa = resultado.rows[0];
++
++      if (!mesa || !tokensIguais(mesa.token, token)) {
++        return res.status(401).json({ erro: 'Acesso à mesa não autorizado.' });
++      }
++
++      req.mesa = { id: mesa.id, numero: mesa.numero };
++      return next();
++    } catch (err) {
++      return res.status(500).json({ erro: 'Erro ao validar a mesa.' });
++    }
++  };
++}
++
++module.exports = { criarValidarMesa, tokensIguais };
+diff --git a/back-end/src/routes/mesas.js b/back-end/src/routes/mesas.js
+new file mode 100644
+index 0000000..7892dfa
+--- /dev/null
++++ b/back-end/src/routes/mesas.js
+@@ -0,0 +1,14 @@
++const express = require('express');
++const router = express.Router();
++const pool = require('../config/database');
++const { criarMesasController } = require('../controllers/mesasController');
++const { autenticar, autorizar } = require('../middlewares/auth');
++
++const mesas = criarMesasController(pool);
++
++router.use(autenticar);
++
++router.get('/', autorizar('proprietario', 'gerente'), mesas.listar);
++router.post('/', autorizar('proprietario'), mesas.criar);
++
++module.exports = router;
+diff --git a/back-end/src/routes/publico.js b/back-end/src/routes/publico.js
+new file mode 100644
+index 0000000..41c9e64
+--- /dev/null
++++ b/back-end/src/routes/publico.js
+@@ -0,0 +1,41 @@
++const express = require('express');
++const rateLimit = require('express-rate-limit');
++const pool = require('../config/database');
++const { criarValidarMesa } = require('../middlewares/mesa');
++const { criarPublicoController } = require('../controllers/publicoController');
++
++const router = express.Router();
++const validarMesa = criarValidarMesa(pool);
++const publico = criarPublicoController(pool);
++
++const mensagemLimite = { erro: 'Muitas requisições. Tente novamente em instantes.' };
++
++// Proteção geral contra flood, por IP.
++// Atenção: numa cafeteria todos os clientes saem pelo MESMO IP (o Wi-Fi do local),
++// então este limite é propositalmente folgado e configurável.
++const limiteGeral = rateLimit({
++  windowMs: 60 * 1000,
++  limit: Number(process.env.PUBLICO_LIMITE_IP_POR_MIN) || 300,
++  standardHeaders: 'draft-7',
++  legacyHeaders: false,
++  message: mensagemLimite,
++});
++
++// Limite de pedidos por MESA (e não por IP): uma mesa não faz 10+ pedidos em 10 min.
++const limitePedidosPorMesa = rateLimit({
++  windowMs: 10 * 60 * 1000,
++  limit: Number(process.env.PUBLICO_LIMITE_PEDIDOS_MESA) || 10,
++  standardHeaders: 'draft-7',
++  legacyHeaders: false,
++  keyGenerator: (req) => `mesa-${req.mesa.id}`,
++  message: mensagemLimite,
++});
++
++router.use(limiteGeral);
++
++router.get('/mesa/:numero/cardapio', validarMesa, publico.cardapio);
++// validarMesa vem antes do limitador, que usa req.mesa.id como chave.
++router.post('/mesa/:numero/pedidos', validarMesa, limitePedidosPorMesa, publico.criarPedido);
++router.get('/mesa/:numero/pedidos/:id', validarMesa, publico.statusPedido);
++
++module.exports = router;
+diff --git a/docs/PEDIDO-POR-MESA.md b/docs/PEDIDO-POR-MESA.md
+new file mode 100644
+index 0000000..57287bf
+--- /dev/null
++++ b/docs/PEDIDO-POR-MESA.md
+@@ -0,0 +1,46 @@
++# Pedido por mesa (QR code) — contrato da API
++
++Fluxo: o cliente lê o QR da mesa → o front abre `/mesa/7?t=<token>` → o front chama a API
++pública enviando o token no header `x-mesa-token` → o pedido aparece no painel (`GET /api/pedidos`)
++com `mesa`, `origem = 'mesa'` e `atendente = null`.
++
++O QR code deve conter a URL do **front**: `https://<dominio>/mesa/<numero>?t=<token>`.
++Número e token vêm de `GET /api/mesas` (área interna).
++
++## Rotas públicas (sem login)
++
++Todas exigem `x-mesa-token: <token da mesa>` (ou `?t=`). Mesa inexistente, inativa e token
++errado respondem igual (`401`), para não revelar quais mesas existem.
++
++| Método | Rota | Resposta |
++|---|---|---|
++| GET  | `/api/publico/mesa/:numero/cardapio` | `{ mesa, produtos: [{ id, nome, descricao, preco, categoria, imagem_url, disponivel }] }` |
++| POST | `/api/publico/mesa/:numero/pedidos` | `201 { id, mesa, status, total }` |
++| GET  | `/api/publico/mesa/:numero/pedidos/:id` | `{ id, status, total, observacao, itens: [...] }` — só pedidos **da própria mesa** |
++
++`POST` body: `{ "itens": [{ "produto_id": 1, "quantidade": 2 }], "observacao": "Sem açúcar" }`
++
++- O **preço nunca é aceito do cliente**: é lido do banco.
++- Limites: até 20 itens diferentes, 10 unidades por item, observação até 200 caracteres.
++- Erros: `400` dados inválidos/produto indisponível · `401` mesa/token · `409` sem estoque
++  (cardápio desatualizado: o front deve recarregar) · `429` limite de pedidos da mesa.
++
++## Rotas internas (com login)
++
++| Método | Rota | Perfis |
++|---|---|---|
++| GET  | `/api/mesas` | proprietário, gerente |
++| POST | `/api/mesas` `{ "numero": 12 }` | proprietário |
++
++## Limites (rate limit)
++
++- Por **mesa**: 10 pedidos a cada 10 min (`PUBLICO_LIMITE_PEDIDOS_MESA`).
++- Por **IP**: 300 req/min (`PUBLICO_LIMITE_IP_POR_MIN`). É folgado de propósito: numa cafeteria todos
++  os clientes saem pelo mesmo IP do Wi-Fi.
++- Atrás de proxy/ingress (Kubernetes), defina `TRUST_PROXY=1` para o limite enxergar o IP real.
++
++## Banco
++
++Tabela nova `mesas`; colunas novas `produtos.imagem_url`, `pedidos.mesa_id`, `pedidos.origem`.
++As migrações são idempotentes e rodam no `initDB()`. Em bancos antigos com produtos duplicados
++(seed antigo), rode uma vez `back-end/scripts/limpar-duplicatas.sql`.
+-- 
+2.43.0
+

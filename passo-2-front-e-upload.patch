@@ -1,0 +1,3475 @@
+From d13f4c281d6db6e41dac2c600100ca0abc6479a8 Mon Sep 17 00:00:00 2001
+From: dev <dev@local>
+Date: Sun, 8 Nov 2026 17:24:24 +0000
+Subject: [PATCH 1/3] feat(produtos): upload de imagem do produto
+ (JPG/PNG/WebP, ate 2MB)
+
+- POST/DELETE /api/produtos/:id/imagem (proprietario e gerente), multipart campo 'imagem'
+- tipo validado pelos bytes reais (SVG recusado), nome aleatorio, sem sobrescrever
+- arquivos servidos em /uploads com nosniff e cache; sem listagem de pasta
+- remove arquivo antigo na troca e nao deixa arquivo orfao em caso de falha
+- 30 testes novos
+---
+ .gitignore                                    |   4 +-
+ back-end/.dockerignore                        |   3 +-
+ back-end/__tests__/imagensController.test.js  | 215 ++++++++++++++++++
+ back-end/package-lock.json                    |  87 +++++++
+ back-end/package.json                         |   1 +
+ back-end/server.js                            |  14 ++
+ back-end/src/config/uploads.js                |  11 +
+ back-end/src/controllers/imagensController.js |  92 ++++++++
+ back-end/src/middlewares/upload.js            |  22 ++
+ back-end/src/routes/produtos.js               |  11 +
+ 10 files changed, 458 insertions(+), 2 deletions(-)
+ create mode 100644 back-end/__tests__/imagensController.test.js
+ create mode 100644 back-end/src/config/uploads.js
+ create mode 100644 back-end/src/controllers/imagensController.js
+ create mode 100644 back-end/src/middlewares/upload.js
+
+diff --git a/.gitignore b/.gitignore
+index 2f45e56..3ba7f00 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -59,4 +59,6 @@ desktop.ini
+ *.suo
+ *.ntvs*
+ *.njsproj
+-*.sln
+\ No newline at end of file
++*.sln
++# ── Imagens enviadas pelo painel ──
++back-end/uploads/
+diff --git a/back-end/.dockerignore b/back-end/.dockerignore
+index bbd86c1..0c9b4f6 100644
+--- a/back-end/.dockerignore
++++ b/back-end/.dockerignore
+@@ -13,4 +13,5 @@ logs/
+ README.md
+ 
+ coverage/
+-.nyc_output/
+\ No newline at end of file
++.nyc_output/
++uploads
+diff --git a/back-end/__tests__/imagensController.test.js b/back-end/__tests__/imagensController.test.js
+new file mode 100644
+index 0000000..8e8e7ba
+--- /dev/null
++++ b/back-end/__tests__/imagensController.test.js
+@@ -0,0 +1,215 @@
++// Testa o controller REAL (src/controllers/imagensController.js).
++const path = require('path');
++const { criarImagensController, detectarTipo } = require('../src/controllers/imagensController');
++
++const DIR = '/srv/uploads/produtos';
++const URL_BASE = '/uploads/produtos';
++
++const JPG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(20, 1)]);
++const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(20, 1)]);
++const WEBP = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP'), Buffer.alloc(10)]);
++const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
++const EXE = Buffer.concat([Buffer.from('MZ'), Buffer.alloc(40)]);
++
++function mockRes() {
++  return { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
++}
++
++function setup({ imagemAtual = null, produtoExiste = true, falharEm } = {}) {
++  const fs = {
++    mkdir: jest.fn().mockResolvedValue(),
++    writeFile: jest.fn().mockResolvedValue(),
++    unlink: jest.fn().mockResolvedValue(),
++  };
++  const pool = {
++    query: jest.fn(async (sql) => {
++      if (falharEm && falharEm.test(sql)) throw new Error('DB');
++      if (/^SELECT imagem_url/.test(sql)) return { rows: produtoExiste ? [{ imagem_url: imagemAtual }] : [] };
++      return { rows: [] };
++    }),
++  };
++  return { fs, pool, ctrl: criarImagensController(pool, { dir: DIR, urlBase: URL_BASE, fs }) };
++}
++
++describe('detectarTipo()', () => {
++  test.each([
++    ['JPEG', JPG, 'jpg'],
++    ['PNG', PNG, 'png'],
++    ['WebP', WEBP, 'webp'],
++  ])('reconhece %s pelos bytes', (_n, buf, ext) => expect(detectarTipo(buf)).toEqual({ ext }));
++
++  test.each([
++    ['SVG (pode ter script)', SVG],
++    ['executável', EXE],
++    ['arquivo vazio', Buffer.alloc(0)],
++    ['arquivo pequeno demais', Buffer.from([0xff, 0xd8, 0xff])],
++    ['não-buffer', 'texto'],
++    ['RIFF que não é WebP (ex.: WAV)', Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WAVE'), Buffer.alloc(10)])],
++  ])('rejeita %s', (_n, buf) => expect(detectarTipo(buf)).toBeNull());
++});
++
++describe('imagensController.enviar()', () => {
++  test('sucesso: grava com nome aleatório, atualiza o banco e responde a URL pública', async () => {
++    const { ctrl, fs, pool } = setup();
++    const res = mockRes();
++    await ctrl.enviar({ params: { id: '4' }, file: { buffer: PNG, originalname: 'foto.png' } }, res);
++
++    const [caminho, conteudo, opts] = fs.writeFile.mock.calls[0];
++    expect(path.dirname(caminho)).toBe(DIR);
++    expect(path.basename(caminho)).toMatch(/^[0-9a-f]{32}\.png$/);
++    expect(conteudo).toBe(PNG);
++    expect(opts).toEqual({ flag: 'wx' }); // nunca sobrescreve arquivo existente
++
++    const update = pool.query.mock.calls.find((c) => /^UPDATE produtos/.test(c[0]));
++    expect(update[1]).toEqual([`${URL_BASE}/${path.basename(caminho)}`, 4]);
++    expect(res.json).toHaveBeenCalledWith({ id: 4, imagem_url: `${URL_BASE}/${path.basename(caminho)}` });
++  });
++
++  test('a extensão vem do conteúdo, NÃO do nome enviado (arquivo .php com PNG dentro vira .png)', async () => {
++    const { ctrl, fs } = setup();
++    await ctrl.enviar({ params: { id: '1' }, file: { buffer: PNG, originalname: 'shell.php' } }, mockRes());
++    expect(path.basename(fs.writeFile.mock.calls[0][0])).toMatch(/\.png$/);
++  });
++
++  test('conteúdo falso com nome .jpg (na verdade SVG/EXE) → 400 e nada gravado', async () => {
++    for (const buffer of [SVG, EXE]) {
++      const { ctrl, fs, pool } = setup();
++      const res = mockRes();
++      await ctrl.enviar({ params: { id: '1' }, file: { buffer, originalname: 'foto.jpg', mimetype: 'image/jpeg' } }, res);
++      expect(res.status).toHaveBeenCalledWith(400);
++      expect(fs.writeFile).not.toHaveBeenCalled();
++      expect(pool.query).not.toHaveBeenCalled();
++    }
++  });
++
++  test('nomes aleatórios: dois envios nunca geram o mesmo arquivo', async () => {
++    const { ctrl, fs } = setup();
++    for (let i = 0; i < 20; i++) await ctrl.enviar({ params: { id: '1' }, file: { buffer: JPG } }, mockRes());
++    const nomes = new Set(fs.writeFile.mock.calls.map((c) => path.basename(c[0])));
++    expect(nomes.size).toBe(20);
++  });
++
++  test('sem arquivo → 400', async () => {
++    const { ctrl } = setup();
++    const res = mockRes();
++    await ctrl.enviar({ params: { id: '1' } }, res);
++    expect(res.status).toHaveBeenCalledWith(400);
++  });
++
++  test.each(['abc', '0', '-3'])('id inválido (%p) → 404', async (id) => {
++    const { ctrl, fs } = setup();
++    const res = mockRes();
++    await ctrl.enviar({ params: { id }, file: { buffer: JPG } }, res);
++    expect(res.status).toHaveBeenCalledWith(404);
++    expect(fs.writeFile).not.toHaveBeenCalled();
++  });
++
++  test('produto inexistente → 404 e NADA gravado em disco', async () => {
++    const { ctrl, fs } = setup({ produtoExiste: false });
++    const res = mockRes();
++    await ctrl.enviar({ params: { id: '99' }, file: { buffer: JPG } }, res);
++    expect(res.status).toHaveBeenCalledWith(404);
++    expect(fs.writeFile).not.toHaveBeenCalled();
++  });
++
++  test('troca de imagem: apaga o arquivo antigo (só o nome, dentro da pasta de uploads)', async () => {
++    const { ctrl, fs } = setup({ imagemAtual: `${URL_BASE}/antiga.jpg` });
++    await ctrl.enviar({ params: { id: '1' }, file: { buffer: JPG } }, mockRes());
++    expect(fs.unlink).toHaveBeenCalledWith(path.join(DIR, 'antiga.jpg'));
++  });
++
++  test('SEGURANÇA: imagem_url com path traversal não apaga nada fora da pasta', async () => {
++    const { ctrl, fs } = setup({ imagemAtual: `${URL_BASE}/../../../etc/passwd` });
++    await ctrl.enviar({ params: { id: '1' }, file: { buffer: JPG } }, mockRes());
++    expect(fs.unlink).toHaveBeenCalledWith(path.join(DIR, 'passwd')); // basename: fica DENTRO de DIR
++    expect(fs.unlink.mock.calls.every((c) => c[0].startsWith(DIR + path.sep))).toBe(true);
++  });
++
++  test('imagem_url externa/antiga (http...) não tenta apagar arquivo local', async () => {
++    const { ctrl, fs } = setup({ imagemAtual: 'https://exemplo.com/x.jpg' });
++    await ctrl.enviar({ params: { id: '1' }, file: { buffer: JPG } }, mockRes());
++    expect(fs.unlink).not.toHaveBeenCalled();
++  });
++
++  test('arquivo antigo já inexistente (ENOENT) não derruba o envio', async () => {
++    const { ctrl, fs } = setup({ imagemAtual: `${URL_BASE}/sumiu.jpg` });
++    fs.unlink.mockRejectedValue(Object.assign(new Error('x'), { code: 'ENOENT' }));
++    const res = mockRes();
++    await ctrl.enviar({ params: { id: '1' }, file: { buffer: JPG } }, res);
++    expect(res.status).not.toHaveBeenCalledWith(500);
++    expect(res.json).toHaveBeenCalled();
++  });
++
++  test('falha ao apagar o antigo por outro motivo é só registrada (o envio já deu certo)', async () => {
++    const { ctrl, fs } = setup({ imagemAtual: `${URL_BASE}/a.jpg` });
++    fs.unlink.mockRejectedValue(Object.assign(new Error('EPERM'), { code: 'EPERM' }));
++    jest.spyOn(console, 'error').mockImplementation(() => {});
++    const res = mockRes();
++    await ctrl.enviar({ params: { id: '1' }, file: { buffer: JPG } }, res);
++    expect(res.status).not.toHaveBeenCalledWith(500);
++    expect(console.error).toHaveBeenCalled();
++    console.error.mockRestore();
++  });
++
++  test('falha no UPDATE do banco → 500 e o arquivo recém-gravado é removido (sem órfão)', async () => {
++    const { ctrl, fs } = setup({ falharEm: /^UPDATE produtos/ });
++    jest.spyOn(console, 'error').mockImplementation(() => {});
++    const res = mockRes();
++    await ctrl.enviar({ params: { id: '1' }, file: { buffer: JPG } }, res);
++    expect(res.status).toHaveBeenCalledWith(500);
++    const gravado = fs.writeFile.mock.calls[0][0];
++    expect(fs.unlink).toHaveBeenCalledWith(gravado);
++    console.error.mockRestore();
++  });
++
++  test('falha ao gravar em disco → 500 sem tocar no banco', async () => {
++    const { ctrl, fs, pool } = setup();
++    fs.writeFile.mockRejectedValue(new Error('disco cheio'));
++    jest.spyOn(console, 'error').mockImplementation(() => {});
++    const res = mockRes();
++    await ctrl.enviar({ params: { id: '1' }, file: { buffer: JPG } }, res);
++    expect(res.status).toHaveBeenCalledWith(500);
++    expect(pool.query.mock.calls.some((c) => /^UPDATE/.test(c[0]))).toBe(false);
++    console.error.mockRestore();
++  });
++});
++
++describe('imagensController.remover()', () => {
++  test('zera a imagem no banco e apaga o arquivo', async () => {
++    const { ctrl, fs, pool } = setup({ imagemAtual: `${URL_BASE}/x.webp` });
++    const res = mockRes();
++    await ctrl.remover({ params: { id: '2' } }, res);
++    expect(pool.query.mock.calls.find((c) => /SET imagem_url = NULL/.test(c[0]))[1]).toEqual([2]);
++    expect(fs.unlink).toHaveBeenCalledWith(path.join(DIR, 'x.webp'));
++    expect(res.json).toHaveBeenCalledWith({ id: 2, imagem_url: null });
++  });
++
++  test('produto sem imagem: ok, sem apagar nada', async () => {
++    const { ctrl, fs } = setup({ imagemAtual: null });
++    const res = mockRes();
++    await ctrl.remover({ params: { id: '2' } }, res);
++    expect(fs.unlink).not.toHaveBeenCalled();
++    expect(res.json).toHaveBeenCalledWith({ id: 2, imagem_url: null });
++  });
++
++  test('produto inexistente → 404', async () => {
++    const { ctrl } = setup({ produtoExiste: false });
++    const res = mockRes();
++    await ctrl.remover({ params: { id: '2' } }, res);
++    expect(res.status).toHaveBeenCalledWith(404);
++  });
++
++  test('id inválido → 404', async () => {
++    const { ctrl } = setup();
++    const res = mockRes();
++    await ctrl.remover({ params: { id: 'x' } }, res);
++    expect(res.status).toHaveBeenCalledWith(404);
++  });
++
++  test('erro de banco → 500', async () => {
++    const { ctrl } = setup({ falharEm: /^SELECT/ });
++    const res = mockRes();
++    await ctrl.remover({ params: { id: '2' } }, res);
++    expect(res.status).toHaveBeenCalledWith(500);
++  });
++});
+diff --git a/back-end/package-lock.json b/back-end/package-lock.json
+index e3f6588..d5f29b5 100644
+--- a/back-end/package-lock.json
++++ b/back-end/package-lock.json
+@@ -15,6 +15,7 @@
+         "express": "^5.2.1",
+         "express-rate-limit": "^8.7.3",
+         "jsonwebtoken": "^9.0.3",
++        "multer": "^2.5.0",
+         "pg": "^8.20.0"
+       },
+       "devDependencies": {
+@@ -1119,6 +1120,12 @@
+         "node": ">= 8"
+       }
+     },
++    "node_modules/append-field": {
++      "version": "1.0.0",
++      "resolved": "https://registry.npmjs.org/append-field/-/append-field-1.0.0.tgz",
++      "integrity": "sha512-klpgFSWLW1ZEs8svjfb7g4qWY0YS5imI82dTg+QahUvJ8YqAY0P10Uk8tTyh9ZGuYEZEMaeJYCF5BFuX552hsw==",
++      "license": "MIT"
++    },
+     "node_modules/argparse": {
+       "version": "1.0.10",
+       "resolved": "https://registry.npmjs.org/argparse/-/argparse-1.0.10.tgz",
+@@ -1402,6 +1409,17 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/busboy": {
++      "version": "1.6.0",
++      "resolved": "https://registry.npmjs.org/busboy/-/busboy-1.6.0.tgz",
++      "integrity": "sha512-8SFQbg/0hQ9xy3UNTB0YEnsNBbWfhf7RtnzpL7TkBiTBRfrQ9Fxcnz7VJsleJpyp6rVLvXiuORqjlHi5q+PYuA==",
++      "dependencies": {
++        "streamsearch": "^1.1.0"
++      },
++      "engines": {
++        "node": ">=10.16.0"
++      }
++    },
+     "node_modules/bytes": {
+       "version": "3.1.2",
+       "resolved": "https://registry.npmjs.org/bytes/-/bytes-3.1.2.tgz",
+@@ -3563,6 +3581,67 @@
+       "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+       "license": "MIT"
+     },
++    "node_modules/multer": {
++      "version": "2.5.0",
++      "resolved": "https://registry.npmjs.org/multer/-/multer-2.5.0.tgz",
++      "integrity": "sha512-BsqOzYGVq49JcW2IzoSAxeKYRevb+dGGPPWleOR8Lrlk4igwxu1/9pwSXlByhCb7MVZDrNJFC0IBP5/O5nLYRw==",
++      "license": "MIT",
++      "dependencies": {
++        "append-field": "^1.0.0",
++        "busboy": "^1.6.0",
++        "type-is": "^1.6.18"
++      },
++      "engines": {
++        "node": ">= 10.16.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/express"
++      }
++    },
++    "node_modules/multer/node_modules/media-typer": {
++      "version": "0.3.0",
++      "resolved": "https://registry.npmjs.org/media-typer/-/media-typer-0.3.0.tgz",
++      "integrity": "sha512-dq+qelQ9akHpcOl/gUVRTxVIOkAJ1wR3QAvb4RsVjS8oVoFjDGTc679wJYmUmknUF5HwMLOgb5O+a3KxfWapPQ==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.6"
++      }
++    },
++    "node_modules/multer/node_modules/mime-db": {
++      "version": "1.52.0",
++      "resolved": "https://registry.npmjs.org/mime-db/-/mime-db-1.52.0.tgz",
++      "integrity": "sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.6"
++      }
++    },
++    "node_modules/multer/node_modules/mime-types": {
++      "version": "2.1.35",
++      "resolved": "https://registry.npmjs.org/mime-types/-/mime-types-2.1.35.tgz",
++      "integrity": "sha512-ZDY+bPm5zTTF+YpCrAU9nK0UgICYPT0QtT1NZWFv4s++TNkcgVaT0g6+4R2uI4MjQjzysHB1zxuWL50hzaeXiw==",
++      "license": "MIT",
++      "dependencies": {
++        "mime-db": "1.52.0"
++      },
++      "engines": {
++        "node": ">= 0.6"
++      }
++    },
++    "node_modules/multer/node_modules/type-is": {
++      "version": "1.6.18",
++      "resolved": "https://registry.npmjs.org/type-is/-/type-is-1.6.18.tgz",
++      "integrity": "sha512-TkRKr9sUTxEH8MdfuCSP7VizJyzRNMjj2J2do2Jr3Kym598JVdEksuzPQCnlFPW4ky9Q+iA+ma9BGm06XQBy8g==",
++      "license": "MIT",
++      "dependencies": {
++        "media-typer": "0.3.0",
++        "mime-types": "~2.1.24"
++      },
++      "engines": {
++        "node": ">= 0.6"
++      }
++    },
+     "node_modules/natural-compare": {
+       "version": "1.4.0",
+       "resolved": "https://registry.npmjs.org/natural-compare/-/natural-compare-1.4.0.tgz",
+@@ -4565,6 +4644,14 @@
+         "node": ">= 0.8"
+       }
+     },
++    "node_modules/streamsearch": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/streamsearch/-/streamsearch-1.1.0.tgz",
++      "integrity": "sha512-Mcc5wHehp9aXz1ax6bZUyY5afg9u2rv5cqQI3mRrYkGC8rW2hM02jWuwjtL++LS5qinSyhj2QfLyNsuc+VsExg==",
++      "engines": {
++        "node": ">=10.0.0"
++      }
++    },
+     "node_modules/string-length": {
+       "version": "4.0.2",
+       "resolved": "https://registry.npmjs.org/string-length/-/string-length-4.0.2.tgz",
+diff --git a/back-end/package.json b/back-end/package.json
+index 3557920..ea76303 100644
+--- a/back-end/package.json
++++ b/back-end/package.json
+@@ -19,6 +19,7 @@
+     "express": "^5.2.1",
+     "express-rate-limit": "^8.7.3",
+     "jsonwebtoken": "^9.0.3",
++    "multer": "^2.5.0",
+     "pg": "^8.20.0"
+   },
+   "devDependencies": {
+diff --git a/back-end/server.js b/back-end/server.js
+index 422284e..6c9d5c0 100644
+--- a/back-end/server.js
++++ b/back-end/server.js
+@@ -1,7 +1,9 @@
+ require('dotenv').config();
+ const express = require('express');
+ const cors = require('cors');
++const fs = require('fs');
+ const initDB = require('./src/db/init');
++const { UPLOADS_DIR, PRODUTOS_DIR } = require('./src/config/uploads');
+ 
+ const authRoutes = require('./src/routes/auth');
+ const usuariosRoutes = require('./src/routes/usuarios');
+@@ -21,6 +23,16 @@ if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PRO
+ app.use(cors());
+ app.use(express.json());
+ 
++// Imagens enviadas. Os nomes são aleatórios e únicos, então o cache longo é seguro.
++// O nosniff impede o navegador de "adivinhar" outro tipo de conteúdo.
++fs.mkdirSync(PRODUTOS_DIR, { recursive: true });
++app.use('/uploads', express.static(UPLOADS_DIR, {
++  maxAge: '7d',
++  immutable: true,
++  index: false,
++  setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff'),
++}));
++
+ // Rotas
+ app.use('/api/auth', authRoutes);
+ app.use('/api/usuarios', usuariosRoutes);
+@@ -55,6 +67,8 @@ async function start() {
+     console.log('  POST   /api/produtos');
+     console.log('  PUT    /api/produtos/:id');
+     console.log('  DELETE /api/produtos/:id');
++    console.log('  POST   /api/produtos/:id/imagem');
++    console.log('  DELETE /api/produtos/:id/imagem');
+     console.log('  GET    /api/estoque');
+     console.log('  GET    /api/estoque/baixo');
+     console.log('  PUT    /api/estoque/:produto_id');
+diff --git a/back-end/src/config/uploads.js b/back-end/src/config/uploads.js
+new file mode 100644
+index 0000000..dfe8a7c
+--- /dev/null
++++ b/back-end/src/config/uploads.js
+@@ -0,0 +1,11 @@
++const path = require('path');
++
++// Pasta onde as imagens enviadas ficam gravadas. Em Docker, monte um volume aqui
++// (senão as imagens somem quando o container é recriado).
++const UPLOADS_DIR = path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, '..', '..', 'uploads'));
++const PRODUTOS_DIR = path.join(UPLOADS_DIR, 'produtos');
++
++// Prefixo público (servido por express.static em server.js).
++const URL_PRODUTOS = '/uploads/produtos';
++
++module.exports = { UPLOADS_DIR, PRODUTOS_DIR, URL_PRODUTOS };
+diff --git a/back-end/src/controllers/imagensController.js b/back-end/src/controllers/imagensController.js
+new file mode 100644
+index 0000000..e5b672a
+--- /dev/null
++++ b/back-end/src/controllers/imagensController.js
+@@ -0,0 +1,92 @@
++'use strict';
++
++const crypto = require('crypto');
++const path = require('path');
++
++// Descobre o tipo REAL do arquivo pelos primeiros bytes. O nome e o mimetype
++// enviados pelo cliente não são confiáveis (podem ser forjados).
++// SVG fica de fora de propósito: pode carregar JavaScript (XSS).
++function detectarTipo(buf) {
++  if (!Buffer.isBuffer(buf) || buf.length < 12) return null;
++  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return { ext: 'jpg' };
++  if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return { ext: 'png' };
++  if (buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') {
++    return { ext: 'webp' };
++  }
++  return null;
++}
++
++function criarImagensController(pool, { dir, urlBase, fs }) {
++  // Só apaga arquivos que estão DENTRO da pasta de uploads, mesmo que o banco
++  // contenha um valor estranho em imagem_url.
++  async function apagarArquivoAntigo(imagemUrl) {
++    if (!imagemUrl || !imagemUrl.startsWith(`${urlBase}/`)) return;
++    const nome = path.basename(imagemUrl);
++    try {
++      await fs.unlink(path.join(dir, nome));
++    } catch (err) {
++      if (err.code !== 'ENOENT') console.error('Falha ao apagar imagem antiga:', err.message);
++    }
++  }
++
++  function idValido(valor) {
++    const id = Number.parseInt(valor, 10);
++    return Number.isInteger(id) && id > 0 ? id : null;
++  }
++
++  // POST /produtos/:id/imagem  (multipart, campo "imagem")
++  async function enviar(req, res) {
++    const id = idValido(req.params.id);
++    if (!id) return res.status(404).json({ erro: 'Produto não encontrado.' });
++    if (!req.file) return res.status(400).json({ erro: 'Envie um arquivo no campo "imagem".' });
++
++    const tipo = detectarTipo(req.file.buffer);
++    if (!tipo) {
++      return res.status(400).json({ erro: 'Formato não suportado. Use JPG, PNG ou WebP.' });
++    }
++
++    let nomeArquivo;
++    try {
++      const atual = await pool.query('SELECT imagem_url FROM produtos WHERE id = $1', [id]);
++      if (!atual.rows[0]) return res.status(404).json({ erro: 'Produto não encontrado.' });
++
++      nomeArquivo = `${crypto.randomBytes(16).toString('hex')}.${tipo.ext}`;
++      await fs.mkdir(dir, { recursive: true });
++      await fs.writeFile(path.join(dir, nomeArquivo), req.file.buffer, { flag: 'wx' });
++
++      const novaUrl = `${urlBase}/${nomeArquivo}`;
++      await pool.query('UPDATE produtos SET imagem_url = $1 WHERE id = $2', [novaUrl, id]);
++
++      await apagarArquivoAntigo(atual.rows[0].imagem_url);
++      return res.json({ id, imagem_url: novaUrl });
++    } catch (err) {
++      // Não deixa arquivo órfão se algo falhou depois de gravar.
++      if (nomeArquivo) {
++        try { await fs.unlink(path.join(dir, nomeArquivo)); } catch (_) { /* ignora */ }
++      }
++      console.error('Erro ao enviar imagem:', err.message);
++      return res.status(500).json({ erro: 'Erro ao salvar a imagem.' });
++    }
++  }
++
++  // DELETE /produtos/:id/imagem
++  async function remover(req, res) {
++    const id = idValido(req.params.id);
++    if (!id) return res.status(404).json({ erro: 'Produto não encontrado.' });
++
++    try {
++      const atual = await pool.query('SELECT imagem_url FROM produtos WHERE id = $1', [id]);
++      if (!atual.rows[0]) return res.status(404).json({ erro: 'Produto não encontrado.' });
++
++      await pool.query('UPDATE produtos SET imagem_url = NULL WHERE id = $1', [id]);
++      await apagarArquivoAntigo(atual.rows[0].imagem_url);
++      return res.json({ id, imagem_url: null });
++    } catch (err) {
++      return res.status(500).json({ erro: 'Erro ao remover a imagem.' });
++    }
++  }
++
++  return { enviar, remover };
++}
++
++module.exports = { criarImagensController, detectarTipo };
+diff --git a/back-end/src/middlewares/upload.js b/back-end/src/middlewares/upload.js
+new file mode 100644
+index 0000000..5b4c4f5
+--- /dev/null
++++ b/back-end/src/middlewares/upload.js
+@@ -0,0 +1,22 @@
++const multer = require('multer');
++
++const MAX_BYTES = 2 * 1024 * 1024; // 2 MB
++
++// O arquivo fica em memória só até o controller validar o conteúdo real
++// (assinatura/magic bytes) e gravá-lo com nome aleatório.
++const upload = multer({
++  storage: multer.memoryStorage(),
++  limits: { fileSize: MAX_BYTES, files: 1, fields: 5 },
++}).single('imagem');
++
++function uploadImagem(req, res, next) {
++  upload(req, res, (err) => {
++    if (!err) return next();
++    if (err.code === 'LIMIT_FILE_SIZE') {
++      return res.status(413).json({ erro: 'Imagem muito grande. O limite é 2 MB.' });
++    }
++    return res.status(400).json({ erro: 'Upload inválido. Envie um arquivo no campo "imagem".' });
++  });
++}
++
++module.exports = { uploadImagem, MAX_BYTES };
+diff --git a/back-end/src/routes/produtos.js b/back-end/src/routes/produtos.js
+index 7aaa69c..9560855 100644
+--- a/back-end/src/routes/produtos.js
++++ b/back-end/src/routes/produtos.js
+@@ -2,6 +2,13 @@ const express = require('express');
+ const router = express.Router();
+ const { listar, buscarPorId, criar, atualizar, remover } = require('../controllers/produtosController');
+ const { autenticar, autorizar } = require('../middlewares/auth');
++const fs = require('fs').promises;
++const pool = require('../config/database');
++const { PRODUTOS_DIR, URL_PRODUTOS } = require('../config/uploads');
++const { uploadImagem } = require('../middlewares/upload');
++const { criarImagensController } = require('../controllers/imagensController');
++
++const imagens = criarImagensController(pool, { dir: PRODUTOS_DIR, urlBase: URL_PRODUTOS, fs });
+ 
+ router.use(autenticar);
+ 
+@@ -11,4 +18,8 @@ router.post('/', autorizar('proprietario', 'gerente'), criar);
+ router.put('/:id', autorizar('proprietario', 'gerente'), atualizar);
+ router.delete('/:id', autorizar('proprietario'), remover);
+ 
++// Imagem do produto (upload de arquivo pelo painel)
++router.post('/:id/imagem', autorizar('proprietario', 'gerente'), uploadImagem, imagens.enviar);
++router.delete('/:id/imagem', autorizar('proprietario', 'gerente'), imagens.remover);
++
+ module.exports = router;
+\ No newline at end of file
+-- 
+2.43.0
+
+
+From b9f6a8c34842ad29eea9f845e6cb9f4909de6909 Mon Sep 17 00:00:00 2001
+From: dev <dev@local>
+Date: Sun, 8 Nov 2026 21:54:28 +0000
+Subject: [PATCH 2/3] feat(cardapio): informa max_quantidade (teto de 10, sem
+ expor o estoque real)
+
+O front usa para parar o botao + no limite certo e evitar erro 409 sem saida.
+---
+ back-end/__tests__/publicoController.test.js  | 3 +++
+ back-end/src/controllers/publicoController.js | 6 ++++--
+ 2 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/back-end/__tests__/publicoController.test.js b/back-end/__tests__/publicoController.test.js
+index cd45db4..f45b07e 100644
+--- a/back-end/__tests__/publicoController.test.js
++++ b/back-end/__tests__/publicoController.test.js
+@@ -131,6 +131,9 @@ describe('publicoController.cardapio()', () => {
+     const sql = pool.query.mock.calls[0][0];
+     expect(sql).toMatch(/ativo = true/);
+     expect(sql).toMatch(/AS disponivel/);
++    // informa só o máximo que o cliente pode pedir (teto = limite por item), nunca o estoque real
++    expect(sql).toMatch(/LEAST\(COALESCE\(e\.quantidade, 0\), \$1::int\) AS max_quantidade/);
++    expect(pool.query.mock.calls[0][1]).toEqual([LIMITES.maxQuantidadePorItem]);
+     expect(sql).not.toMatch(/SELECT p\.\*/);
+     expect(sql).not.toMatch(/e\.quantidade AS/);
+   });
+diff --git a/back-end/src/controllers/publicoController.js b/back-end/src/controllers/publicoController.js
+index e137406..5a3100e 100644
+--- a/back-end/src/controllers/publicoController.js
++++ b/back-end/src/controllers/publicoController.js
+@@ -72,11 +72,13 @@ function criarPublicoController(pool) {
+     try {
+       const resultado = await pool.query(
+         `SELECT p.id, p.nome, p.descricao, p.preco, p.categoria, p.imagem_url,
+-                COALESCE(e.quantidade, 0) > 0 AS disponivel
++                COALESCE(e.quantidade, 0) > 0 AS disponivel,
++                LEAST(COALESCE(e.quantidade, 0), $1::int) AS max_quantidade
+          FROM produtos p
+          LEFT JOIN estoque e ON e.produto_id = p.id
+          WHERE p.ativo = true
+-         ORDER BY p.categoria, p.nome`
++         ORDER BY p.categoria, p.nome`,
++        [LIMITES.maxQuantidadePorItem]
+       );
+       return res.json({ mesa: req.mesa.numero, produtos: resultado.rows });
+     } catch (err) {
+-- 
+2.43.0
+
+
+From 5ccf0fbe6218cc611c665bfa25b9776faacb20a0 Mon Sep 17 00:00:00 2001
+From: dev <dev@local>
+Date: Sun, 8 Nov 2026 21:54:29 +0000
+Subject: [PATCH 3/3] feat(front): tela publica do cliente na mesa (QR code) +
+ infra
+
+- rota publica /mesa/:numero?t=<token>: boas-vindas animada (cafe 'pulando' tipo Mario),
+  cardapio com imagem/descricao/valor, botao Incluir/quantidade, Avancar so com 1+ item,
+  resumo com observacao, Concluir e confirmacao
+- token guardado na sessao e removido da URL; carrinho sobrevive a recarregar; trava de duplo clique;
+  trata 401/409/429/rede; respeita prefers-reduced-motion
+- nginx.conf com fallback de SPA (sem ele /mesa/7 dava 404 no container)
+- docker-compose: corrige nome do Dockerfile (DockerFile), volume de uploads, build args do front
+- vitest + testing-library: 47 testes (carrinho, sessao e fluxo completo)
+- docs atualizados
+---
+ docker-compose.yaml                           |  14 +-
+ docs/PEDIDO-POR-MESA.md                       |  36 +-
+ front-end/Dockerfile                          |   7 +-
+ front-end/index.html                          |   2 +-
+ front-end/nginx.conf                          |  20 +
+ front-end/package-lock.json                   | 899 +++++++++++++++++-
+ front-end/package.json                        |   8 +-
+ front-end/src/App.jsx                         |   3 +
+ front-end/src/components/mesa/BoasVindas.jsx  |  49 +
+ front-end/src/components/mesa/Cardapio.jsx    | 123 +++
+ front-end/src/components/mesa/Confirmacao.jsx |  17 +
+ front-end/src/components/mesa/Resumo.jsx      |  64 ++
+ front-end/src/config/cafe.js                  |   2 +
+ front-end/src/lib/carrinho.js                 |  85 ++
+ front-end/src/lib/carrinho.test.js            | 109 +++
+ front-end/src/lib/sessaoMesa.js               |  45 +
+ front-end/src/lib/sessaoMesa.test.js          |  42 +
+ front-end/src/pages/public/MesaPage.jsx       | 179 ++++
+ front-end/src/pages/public/MesaPage.test.jsx  | 284 ++++++
+ front-end/src/services/publicoApi.js          |  40 +
+ front-end/src/styles/mesa.css                 |  90 ++
+ front-end/src/test/setup.js                   |  13 +
+ front-end/vite.config.js                      |   9 +-
+ 23 files changed, 2108 insertions(+), 32 deletions(-)
+ create mode 100644 front-end/nginx.conf
+ create mode 100644 front-end/src/components/mesa/BoasVindas.jsx
+ create mode 100644 front-end/src/components/mesa/Cardapio.jsx
+ create mode 100644 front-end/src/components/mesa/Confirmacao.jsx
+ create mode 100644 front-end/src/components/mesa/Resumo.jsx
+ create mode 100644 front-end/src/config/cafe.js
+ create mode 100644 front-end/src/lib/carrinho.js
+ create mode 100644 front-end/src/lib/carrinho.test.js
+ create mode 100644 front-end/src/lib/sessaoMesa.js
+ create mode 100644 front-end/src/lib/sessaoMesa.test.js
+ create mode 100644 front-end/src/pages/public/MesaPage.jsx
+ create mode 100644 front-end/src/pages/public/MesaPage.test.jsx
+ create mode 100644 front-end/src/services/publicoApi.js
+ create mode 100644 front-end/src/styles/mesa.css
+ create mode 100644 front-end/src/test/setup.js
+
+diff --git a/docker-compose.yaml b/docker-compose.yaml
+index 67b7e77..f207792 100644
+--- a/docker-compose.yaml
++++ b/docker-compose.yaml
+@@ -28,7 +28,7 @@ services:
+       - cafe_grao_network
+     build:
+       context: ./back-end
+-      dockerfile: DockerFile
++      dockerfile: Dockerfile
+     container_name: cafe_grao_backend
+     environment:
+       DB_HOST: ${DB_HOST}
+@@ -37,6 +37,7 @@ services:
+       DB_PASSWORD: ${DB_PASSWORD}
+       PORT: ${PORT}
+       JWT_SECRET: ${JWT_SECRET}
++      UPLOADS_DIR: /app/uploads
+     ports:
+       - "${BACKEND_PORT}:3000"
+     depends_on:
+@@ -45,6 +46,8 @@ services:
+     volumes:
+       - ./back-end/logs:/app/logs
+       - ./back-end/data:/app/data
++      # Imagens enviadas pelo painel: sem este volume elas somem quando o container é recriado
++      - uploads:/app/uploads
+     command: node server.js
+     restart: unless-stopped
+ 
+@@ -56,7 +59,11 @@ services:
+       - 1.1.1.1
+     build:
+       context: ./front-end
+-      dockerfile: DockerFile
++      dockerfile: Dockerfile
++      args:
++        # Embutidos no build do front. Ex.: VITE_API_URL=http://localhost:3000/api
++        VITE_API_URL: ${VITE_API_URL:-}
++        VITE_NOME_CAFE: ${VITE_NOME_CAFE:-}
+     container_name: cafe_grao_frontend
+     ports:
+       - "${FRONTEND_PORT}:80"
+@@ -72,4 +79,5 @@ networks:
+     driver: bridge
+ 
+ volumes:
+-  pgdata:
+\ No newline at end of file
++  pgdata:
++  uploads:
+\ No newline at end of file
+diff --git a/docs/PEDIDO-POR-MESA.md b/docs/PEDIDO-POR-MESA.md
+index 57287bf..c78c673 100644
+--- a/docs/PEDIDO-POR-MESA.md
++++ b/docs/PEDIDO-POR-MESA.md
+@@ -14,7 +14,7 @@ errado respondem igual (`401`), para não revelar quais mesas existem.
+ 
+ | Método | Rota | Resposta |
+ |---|---|---|
+-| GET  | `/api/publico/mesa/:numero/cardapio` | `{ mesa, produtos: [{ id, nome, descricao, preco, categoria, imagem_url, disponivel }] }` |
++| GET  | `/api/publico/mesa/:numero/cardapio` | `{ mesa, produtos: [{ id, nome, descricao, preco, categoria, imagem_url, disponivel, max_quantidade }] }` — `max_quantidade` é o máximo que o cliente pode pedir do item (teto de 10; não é o estoque real). `imagem_url` é relativa (`/uploads/produtos/...`): o front deve prefixar com a origem da API. |
+ | POST | `/api/publico/mesa/:numero/pedidos` | `201 { id, mesa, status, total }` |
+ | GET  | `/api/publico/mesa/:numero/pedidos/:id` | `{ id, status, total, observacao, itens: [...] }` — só pedidos **da própria mesa** |
+ 
+@@ -44,3 +44,37 @@ errado respondem igual (`401`), para não revelar quais mesas existem.
+ Tabela nova `mesas`; colunas novas `produtos.imagem_url`, `pedidos.mesa_id`, `pedidos.origem`.
+ As migrações são idempotentes e rodam no `initDB()`. Em bancos antigos com produtos duplicados
+ (seed antigo), rode uma vez `back-end/scripts/limpar-duplicatas.sql`.
++
++## Imagens dos produtos (upload de arquivo)
++
++| Método | Rota | Perfis |
++|---|---|---|
++| POST   | `/api/produtos/:id/imagem` — `multipart/form-data`, campo **`imagem`** | proprietário, gerente |
++| DELETE | `/api/produtos/:id/imagem` | proprietário, gerente |
++
++- Aceita **JPG, PNG e WebP** de até **2 MB**. O tipo é conferido pelos bytes do arquivo (o nome e o
++  `Content-Type` enviados são ignorados); **SVG é recusado** de propósito (pode carregar script).
++- O arquivo é salvo com nome aleatório em `UPLOADS_DIR` (padrão `back-end/uploads`) e servido em
++  `/uploads/produtos/<nome>`. A resposta traz `imagem_url` (caminho relativo).
++- Trocar a imagem apaga a anterior; se algo falhar no meio, não sobra arquivo órfão.
++- **Docker:** o `docker-compose` já monta o volume `uploads`. Sem volume, as imagens somem quando o container
++  é recriado. **Kubernetes:** com mais de 1 réplica do back-end, cada pod teria a sua própria pasta; use um
++  volume compartilhado (PVC) ou armazenamento de objetos (S3).
++- Exemplo: `curl -X POST http://localhost:3000/api/produtos/1/imagem -H "Authorization: Bearer <token>" -F imagem=@cafe.jpg`
++
++## Front-end (tela do cliente)
++
++Rota pública `/mesa/:numero?t=<token>` (`front-end/src/pages/public/MesaPage.jsx`).
++Fluxo: boas-vindas animada → cardápio (incluir/quantidade) → **Avançar** (só aparece com ≥ 1 item) →
++resumo + observação → **Concluir pedido** → confirmação.
++
++Variáveis de build do front (o Vite as embute na hora do `build`):
++
++| Variável | Para quê | Padrão |
++|---|---|---|
++| `VITE_API_URL` | URL da API, ex.: `https://api.meucafe.com/api` | `http://127.0.0.1:3000/api` |
++| `VITE_NOME_CAFE` | Nome na tela de boas-vindas | `Café Grão` |
++
++O servidor web do front precisa devolver `index.html` para rotas desconhecidas (o `nginx.conf` do projeto já faz
++isso). Sem isso, abrir `/mesa/7` direto, que é o que o QR code faz, dá 404.
++Testes: `cd front-end && npm test`.
+diff --git a/front-end/Dockerfile b/front-end/Dockerfile
+index 0e853ee..6419e58 100644
+--- a/front-end/Dockerfile
++++ b/front-end/Dockerfile
+@@ -3,8 +3,13 @@ WORKDIR /app
+ COPY package*.json ./
+ RUN npm install
+ COPY . .
++# Valores embutidos no build (o Vite lê VITE_* em tempo de build, não em execução).
++ARG VITE_API_URL
++ARG VITE_NOME_CAFE
++ENV VITE_API_URL=$VITE_API_URL VITE_NOME_CAFE=$VITE_NOME_CAFE
+ RUN npm run build
+ FROM nginx:alpine
++COPY nginx.conf /etc/nginx/conf.d/default.conf
+ COPY --from=builder /app/dist /usr/share/nginx/html
+ EXPOSE 80
+-CMD ["nginx", "-g", "daemon off;"]
+\ No newline at end of file
++CMD ["nginx", "-g", "daemon off;"]
+diff --git a/front-end/index.html b/front-end/index.html
+index cbe91d9..e78f797 100644
+--- a/front-end/index.html
++++ b/front-end/index.html
+@@ -3,7 +3,7 @@
+   <head>
+     <meta charset="UTF-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+-    <title>RBAC Panel</title>
++    <title>Café Grão</title>
+     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236c63ff' stroke-width='2'><path d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/></svg>" />
+   </head>
+   <body>
+diff --git a/front-end/nginx.conf b/front-end/nginx.conf
+new file mode 100644
+index 0000000..79b89de
+--- /dev/null
++++ b/front-end/nginx.conf
+@@ -0,0 +1,20 @@
++server {
++    listen 80;
++    root /usr/share/nginx/html;
++    index index.html;
++
++    # SPA: /mesa/7 (a URL do QR code) e qualquer rota do React precisam cair no index.html.
++    # Sem isto, abrir o link direto devolveria 404 do nginx.
++    location / {
++        try_files $uri $uri/ /index.html;
++    }
++
++    # Arquivos com hash no nome podem ficar em cache por muito tempo.
++    location /assets/ {
++        try_files $uri =404;
++        expires 1y;
++        add_header Cache-Control "public, immutable";
++    }
++
++    add_header X-Content-Type-Options nosniff always;
++}
+diff --git a/front-end/package-lock.json b/front-end/package-lock.json
+index 0d6d1fd..dba8a86 100644
+--- a/front-end/package-lock.json
++++ b/front-end/package-lock.json
+@@ -18,6 +18,9 @@
+         "@babel/core": "^7.29.0",
+         "@eslint/js": "^9.39.4",
+         "@rolldown/plugin-babel": "^0.2.1",
++        "@testing-library/jest-dom": "^7.0.1",
++        "@testing-library/react": "^16.3.3",
++        "@testing-library/user-event": "^14.6.8",
+         "@types/react": "^19.2.14",
+         "@types/react-dom": "^19.2.3",
+         "@vitejs/plugin-react": "^6.0.1",
+@@ -26,9 +29,18 @@
+         "eslint-plugin-react-hooks": "^7.0.1",
+         "eslint-plugin-react-refresh": "^0.5.2",
+         "globals": "^17.4.0",
+-        "vite": "^8.0.1"
++        "jsdom": "^31.0.0",
++        "vite": "^8.0.1",
++        "vitest": "^5.1.0"
+       }
+     },
++    "node_modules/@adobe/css-tools": {
++      "version": "4.5.0",
++      "resolved": "https://registry.npmjs.org/@adobe/css-tools/-/css-tools-4.5.0.tgz",
++      "integrity": "sha512-6OzddxPio9UiWTCemp4N8cYLV2ZN1ncRnV1cVGtve7dhPOtRkleRyx32GQCYSwDYgaHU3USMm84tNsvKzRCa1Q==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/@babel/code-frame": {
+       "version": "7.29.0",
+       "resolved": "https://registry.npmjs.org/@babel/code-frame/-/code-frame-7.29.0.tgz",
+@@ -60,7 +72,6 @@
+       "integrity": "sha512-CGOfOJqWjg2qW/Mb6zNsDm+u5vFQ8DxXfbM09z69p5Z6+mE1ikP2jUXw+j42Pf1XTYED2Rni5f95npYeuwMDQA==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "@babel/code-frame": "^7.29.0",
+         "@babel/generator": "^7.29.0",
+@@ -222,6 +233,16 @@
+         "node": ">=6.0.0"
+       }
+     },
++    "node_modules/@babel/runtime": {
++      "version": "7.29.13",
++      "resolved": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.13.tgz",
++      "integrity": "sha512-v+oN26xP4YIlQsbQ/CbTH1WG5m/l/DjKKZNy/Kp3f/AFvbgt7Em/D0FeMM3O2hX0YzeN2M16W8lOpyhIkfCBcQ==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=6.9.0"
++      }
++    },
+     "node_modules/@babel/template": {
+       "version": "7.28.6",
+       "resolved": "https://registry.npmjs.org/@babel/template/-/template-7.28.6.tgz",
+@@ -461,6 +482,24 @@
+         "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+       }
+     },
++    "node_modules/@exodus/bytes": {
++      "version": "1.16.0",
++      "resolved": "https://registry.npmjs.org/@exodus/bytes/-/bytes-1.16.0.tgz",
++      "integrity": "sha512-IcpW84uEn3N7ETtNZMlxKhfl6Pec8rUNGOTBtWbK1FKhJxIFAptZyVrvVRVBimAJxJCgc3PxepxkdWWG4DVzfA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": "^20.19.0 || ^22.12.0 || >=24.0.0"
++      },
++      "peerDependencies": {
++        "@noble/hashes": "^1.8.0 || ^2.0.0"
++      },
++      "peerDependenciesMeta": {
++        "@noble/hashes": {
++          "optional": true
++        }
++      }
++    },
+     "node_modules/@humanfs/core": {
+       "version": "0.19.1",
+       "resolved": "https://registry.npmjs.org/@humanfs/core/-/core-0.19.1.tgz",
+@@ -546,9 +585,9 @@
+       }
+     },
+     "node_modules/@jridgewell/sourcemap-codec": {
+-      "version": "1.5.5",
+-      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.5.tgz",
+-      "integrity": "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==",
++      "version": "1.6.0",
++      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.6.0.tgz",
++      "integrity": "sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==",
+       "dev": true,
+       "license": "MIT"
+     },
+@@ -851,7 +890,6 @@
+       "integrity": "sha512-q9pE8+47bQNHb5eWVcE6oXppA+JTSwvnrhH53m0ZuHuK5MLvwsLoWrWzBTFQqQ06BVxz1gp0HblLsch8o6pvZw==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "picomatch": "^4.0.3"
+       },
+@@ -884,6 +922,105 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/@testing-library/dom": {
++      "version": "10.4.2",
++      "resolved": "https://registry.npmjs.org/@testing-library/dom/-/dom-10.4.2.tgz",
++      "integrity": "sha512-yzr2S9HyAIdhz2/6qHgbs665Q7PKVcDF05vsOlHPxG1mo36gKVesdYVeDLnXgfjJ03CrKRk08knc6+E/9m8v2Q==",
++      "dev": true,
++      "license": "MIT",
++      "peer": true,
++      "dependencies": {
++        "@babel/code-frame": "^7.10.4",
++        "@babel/runtime": "^7.12.5",
++        "@types/aria-query": "^5.0.1",
++        "aria-query": "5.3.0",
++        "dom-accessibility-api": "^0.5.9",
++        "lz-string": "^1.5.0",
++        "picocolors": "1.1.1",
++        "pretty-format": "^27.0.2"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@testing-library/jest-dom": {
++      "version": "7.0.1",
++      "resolved": "https://registry.npmjs.org/@testing-library/jest-dom/-/jest-dom-7.0.1.tgz",
++      "integrity": "sha512-oMDTC3oA+6CXSO2JZnvOI7CA6oVub6kij5ggk9ohwye5slmkwxYDXcPOVxgMw/RQlticjtO0C1RZkR97HgrWMw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@adobe/css-tools": "^4.4.0",
++        "aria-query": "^5.0.0",
++        "css.escape": "^1.5.1",
++        "dom-accessibility-api": "^0.6.3",
++        "picocolors": "^1.1.1",
++        "redent": "^3.0.0"
++      },
++      "engines": {
++        "node": ">=22",
++        "npm": ">=6",
++        "yarn": ">=1"
++      },
++      "peerDependencies": {
++        "@testing-library/dom": ">=10 <11",
++        "vitest": ">= 0.32"
++      },
++      "peerDependenciesMeta": {
++        "vitest": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/@testing-library/jest-dom/node_modules/dom-accessibility-api": {
++      "version": "0.6.3",
++      "resolved": "https://registry.npmjs.org/dom-accessibility-api/-/dom-accessibility-api-0.6.3.tgz",
++      "integrity": "sha512-7ZgogeTnjuHbo+ct10G9Ffp0mif17idi0IyWNVA/wcwcm7NPOD/WEHVP3n7n3MhXqxoIYm8d6MuZohYWIZ4T3w==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/@testing-library/react": {
++      "version": "16.3.3",
++      "resolved": "https://registry.npmjs.org/@testing-library/react/-/react-16.3.3.tgz",
++      "integrity": "sha512-Uo193NgQbPMz6lrrhtRQQFcMC6Re/ELLFbbuVL30WDlZxlpZf9/lMHTAVxPRLw1q1iu9OJmR1c2BLiENRstdBg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@babel/runtime": "^7.12.5"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "peerDependencies": {
++        "@testing-library/dom": "^10.0.0",
++        "@types/react": "^18.0.0 || ^19.0.0",
++        "@types/react-dom": "^18.0.0 || ^19.0.0",
++        "react": "^18.0.0 || ^19.0.0",
++        "react-dom": "^18.0.0 || ^19.0.0"
++      },
++      "peerDependenciesMeta": {
++        "@types/react": {
++          "optional": true
++        },
++        "@types/react-dom": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/@testing-library/user-event": {
++      "version": "14.6.8",
++      "resolved": "https://registry.npmjs.org/@testing-library/user-event/-/user-event-14.6.8.tgz",
++      "integrity": "sha512-vgSSqnANMnkcYR/vUNDbwS7aM3OErRLNUG8vCVVlj4oc6cKffUrccX7UAS5AmJQQNZTSibi9z5GvvRZ0aYgUCQ==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=12",
++        "npm": ">=6"
++      },
++      "peerDependencies": {
++        "@testing-library/dom": ">=7.21.4"
++      }
++    },
+     "node_modules/@tybys/wasm-util": {
+       "version": "0.10.1",
+       "resolved": "https://registry.npmjs.org/@tybys/wasm-util/-/wasm-util-0.10.1.tgz",
+@@ -895,6 +1032,32 @@
+         "tslib": "^2.4.0"
+       }
+     },
++    "node_modules/@types/aria-query": {
++      "version": "5.0.4",
++      "resolved": "https://registry.npmjs.org/@types/aria-query/-/aria-query-5.0.4.tgz",
++      "integrity": "sha512-rfT93uj5s0PRL7EzccGMs3brplhcrghnDoV26NqKhCAS1hVo+WdNsPvE/yb6ilfr5hi2MEk6d5EWJTKdxg8jVw==",
++      "dev": true,
++      "license": "MIT",
++      "peer": true
++    },
++    "node_modules/@types/chai": {
++      "version": "5.2.3",
++      "resolved": "https://registry.npmjs.org/@types/chai/-/chai-5.2.3.tgz",
++      "integrity": "sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/deep-eql": "*",
++        "assertion-error": "^2.0.1"
++      }
++    },
++    "node_modules/@types/deep-eql": {
++      "version": "4.0.2",
++      "resolved": "https://registry.npmjs.org/@types/deep-eql/-/deep-eql-4.0.2.tgz",
++      "integrity": "sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/@types/estree": {
+       "version": "1.0.8",
+       "resolved": "https://registry.npmjs.org/@types/estree/-/estree-1.0.8.tgz",
+@@ -915,7 +1078,6 @@
+       "integrity": "sha512-ilcTH/UniCkMdtexkoCN0bI7pMcJDvmQFPvuPvmEaYA/NSfFTAgdUSLAoVjaRJm7+6PvcM+q1zYOwS4wTYMF9w==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "csstype": "^3.2.2"
+       }
+@@ -956,13 +1118,50 @@
+         }
+       }
+     },
++    "node_modules/@vitest/mocker": {
++      "version": "5.1.0",
++      "resolved": "https://registry.npmjs.org/@vitest/mocker/-/mocker-5.1.0.tgz",
++      "integrity": "sha512-5umB9/jlWcqVS6fsrFmv5Gdnpu6wAUio/lEOwAmvB7v+lFo/IW2B9FhAD0p19GCULTgMzLCdUmuCDCnAzWgppQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@jridgewell/trace-mapping": "0.3.31",
++        "@vitest/spy": "5.1.0",
++        "estree-walker": "^3.0.3",
++        "magic-string": "^1.4.3"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      },
++      "peerDependencies": {
++        "msw": "^2.4.9 || ^3.0.0",
++        "vite": "^6.0.0 || ^7.0.0 || ^8.0.0"
++      },
++      "peerDependenciesMeta": {
++        "msw": {
++          "optional": true
++        },
++        "vite": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/@vitest/spy": {
++      "version": "5.1.0",
++      "resolved": "https://registry.npmjs.org/@vitest/spy/-/spy-5.1.0.tgz",
++      "integrity": "sha512-2DPO5OMHWKrBngC+fCmTQqemNF0gidRhp3lxbBmRhW+M1XJrfgPpqNqWVevXtn2f2ufD5ZaR1B6B641aAlcX5A==",
++      "dev": true,
++      "license": "MIT",
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      }
++    },
+     "node_modules/acorn": {
+       "version": "8.16.0",
+       "resolved": "https://registry.npmjs.org/acorn/-/acorn-8.16.0.tgz",
+       "integrity": "sha512-UVJyE9MttOsBQIDKw1skb9nAwQuR5wuGD3+82K6JgJlm/Y+KI92oNsMNGZCYdDsVtRHSak0pcV5Dno5+4jh9sw==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "bin": {
+         "acorn": "bin/acorn"
+       },
+@@ -997,6 +1196,17 @@
+         "url": "https://github.com/sponsors/epoberezkin"
+       }
+     },
++    "node_modules/ansi-regex": {
++      "version": "5.0.1",
++      "resolved": "https://registry.npmjs.org/ansi-regex/-/ansi-regex-5.0.1.tgz",
++      "integrity": "sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==",
++      "dev": true,
++      "license": "MIT",
++      "peer": true,
++      "engines": {
++        "node": ">=8"
++      }
++    },
+     "node_modules/ansi-styles": {
+       "version": "4.3.0",
+       "resolved": "https://registry.npmjs.org/ansi-styles/-/ansi-styles-4.3.0.tgz",
+@@ -1020,6 +1230,26 @@
+       "dev": true,
+       "license": "Python-2.0"
+     },
++    "node_modules/aria-query": {
++      "version": "5.3.0",
++      "resolved": "https://registry.npmjs.org/aria-query/-/aria-query-5.3.0.tgz",
++      "integrity": "sha512-b0P0sZPKtyu8HkeRAfCq0IfURZK+SuwMjY1UXGBU27wpAiTwQAIlq56IbIO+ytk/JjS1fMR14ee5WBBfKi5J6A==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "dequal": "^2.0.3"
++      }
++    },
++    "node_modules/assertion-error": {
++      "version": "2.0.1",
++      "resolved": "https://registry.npmjs.org/assertion-error/-/assertion-error-2.0.1.tgz",
++      "integrity": "sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=12"
++      }
++    },
+     "node_modules/asynckit": {
+       "version": "0.4.0",
+       "resolved": "https://registry.npmjs.org/asynckit/-/asynckit-0.4.0.tgz",
+@@ -1043,7 +1273,6 @@
+       "integrity": "sha512-Ixm8tFfoKKIPYdCCKYTsqv+Fd4IJ0DQqMyEimo+pxUOMUR9cVPlwTrFt9Avu+3cb6Zp3mAzl+t1MrG2fxxKsxw==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "@babel/types": "^7.26.0"
+       }
+@@ -1068,6 +1297,33 @@
+         "node": ">=6.0.0"
+       }
+     },
++    "node_modules/bcp-47": {
++      "version": "2.1.2",
++      "resolved": "https://registry.npmjs.org/bcp-47/-/bcp-47-2.1.2.tgz",
++      "integrity": "sha512-wsv86UuNFuPnVieKLyECTT+CP1WSAHeoIg5P3xu2kA9Z+7fVPoKt7dxzSeEhtJel0AI+NW3fIW3KtTKQKUCngg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "is-alphabetical": "^2.0.0",
++        "is-alphanumerical": "^2.0.0",
++        "is-decimal": "^2.0.0"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/wooorm"
++      }
++    },
++    "node_modules/bcp-47-match": {
++      "version": "2.0.3",
++      "resolved": "https://registry.npmjs.org/bcp-47-match/-/bcp-47-match-2.0.3.tgz",
++      "integrity": "sha512-JtTezzbAibu8G0R9op9zb3vcWZd9JF6M0xOYGPn0fNCd7wOpRB1mU2mH9T8gaBGbAAyIIVgB2G7xG0GP98zMAQ==",
++      "dev": true,
++      "license": "MIT",
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/wooorm"
++      }
++    },
+     "node_modules/brace-expansion": {
+       "version": "1.1.12",
+       "resolved": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-1.1.12.tgz",
+@@ -1099,7 +1355,6 @@
+         }
+       ],
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "baseline-browser-mapping": "^2.9.0",
+         "caniuse-lite": "^1.0.30001759",
+@@ -1158,6 +1413,16 @@
+       ],
+       "license": "CC-BY-4.0"
+     },
++    "node_modules/chai": {
++      "version": "6.3.0",
++      "resolved": "https://registry.npmjs.org/chai/-/chai-6.3.0.tgz",
++      "integrity": "sha512-XWAtwJ6OHO+tj0EKCs0Y2UamnyOxseZWltU4x2U2wh8g4AigdjwvtUjvLP2tqkA/avxHEtzxNaqGq/YGNwckKg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/chalk": {
+       "version": "4.1.2",
+       "resolved": "https://registry.npmjs.org/chalk/-/chalk-4.1.2.tgz",
+@@ -1249,6 +1514,13 @@
+         "node": ">= 8"
+       }
+     },
++    "node_modules/css.escape": {
++      "version": "1.5.1",
++      "resolved": "https://registry.npmjs.org/css.escape/-/css.escape-1.5.1.tgz",
++      "integrity": "sha512-YUifsXXuknHlUsmlgyY0PKzgPOr7/FjCePfHNt0jxm83wHZi44VDMQ7/fGNkjY3/jV1MC+1CmZbaHzugyeRtpg==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/csstype": {
+       "version": "3.2.3",
+       "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+@@ -1256,6 +1528,20 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/data-urls": {
++      "version": "8.0.0",
++      "resolved": "https://registry.npmjs.org/data-urls/-/data-urls-8.0.0.tgz",
++      "integrity": "sha512-JQUCCK+/CAGbGGx618PlFZMXH81Jtj7t73CHv9dd/zVWvxgGT2zLFRjnKb+Ng46GIwcy+f7f88qd4duqllK+WQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "whatwg-mimetype": "^5.0.0",
++        "whatwg-url": "^17.1.2"
++      },
++      "engines": {
++        "node": "^22.14.0 || >=24.0.0"
++      }
++    },
+     "node_modules/debug": {
+       "version": "4.4.3",
+       "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+@@ -1274,6 +1560,13 @@
+         }
+       }
+     },
++    "node_modules/decimal.js": {
++      "version": "10.6.0",
++      "resolved": "https://registry.npmjs.org/decimal.js/-/decimal.js-10.6.0.tgz",
++      "integrity": "sha512-YpgQiITW3JXGntzdUmyUR1V812Hn8T1YVXhCu+wO3OpS4eU9l4YdD3qjyiKdV6mvV29zapkMeD390UVEf2lkUg==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/deep-is": {
+       "version": "0.1.4",
+       "resolved": "https://registry.npmjs.org/deep-is/-/deep-is-0.1.4.tgz",
+@@ -1290,6 +1583,16 @@
+         "node": ">=0.4.0"
+       }
+     },
++    "node_modules/dequal": {
++      "version": "2.0.3",
++      "resolved": "https://registry.npmjs.org/dequal/-/dequal-2.0.3.tgz",
++      "integrity": "sha512-0je+qPKHEMohvfRTCEo3CrPG6cAzAYgmzKyxRiYSSDkS6eGJdyVJm7WaYA5ECaAD9wLB2T4EEeymA5aFVcYXCA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=6"
++      }
++    },
+     "node_modules/detect-libc": {
+       "version": "2.1.2",
+       "resolved": "https://registry.npmjs.org/detect-libc/-/detect-libc-2.1.2.tgz",
+@@ -1300,6 +1603,14 @@
+         "node": ">=8"
+       }
+     },
++    "node_modules/dom-accessibility-api": {
++      "version": "0.5.16",
++      "resolved": "https://registry.npmjs.org/dom-accessibility-api/-/dom-accessibility-api-0.5.16.tgz",
++      "integrity": "sha512-X7BJ2yElsnOJ30pZF4uIIDfBEVgF4XEBxL9Bxhy6dnrm5hkzqmsWHGTiHqRiITNhMyFLyAiWndIJP7Z1NTteDg==",
++      "dev": true,
++      "license": "MIT",
++      "peer": true
++    },
+     "node_modules/dunder-proto": {
+       "version": "1.0.1",
+       "resolved": "https://registry.npmjs.org/dunder-proto/-/dunder-proto-1.0.1.tgz",
+@@ -1321,6 +1632,19 @@
+       "dev": true,
+       "license": "ISC"
+     },
++    "node_modules/entities": {
++      "version": "9.0.0",
++      "resolved": "https://registry.npmjs.org/entities/-/entities-9.0.0.tgz",
++      "integrity": "sha512-oJFNDJg3kTPwAD1cNn2+WmUq4wFoo09npc3Ydf1D7ED4smRiWrsKnaLxykrTWgyGEcusc87P5dxlAleol9kpkg==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "engines": {
++        "node": ">=20.19.0"
++      },
++      "funding": {
++        "url": "https://github.com/fb55/entities?sponsor=1"
++      }
++    },
+     "node_modules/es-define-property": {
+       "version": "1.0.1",
+       "resolved": "https://registry.npmjs.org/es-define-property/-/es-define-property-1.0.1.tgz",
+@@ -1339,6 +1663,13 @@
+         "node": ">= 0.4"
+       }
+     },
++    "node_modules/es-module-lexer": {
++      "version": "2.3.2",
++      "resolved": "https://registry.npmjs.org/es-module-lexer/-/es-module-lexer-2.3.2.tgz",
++      "integrity": "sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/es-object-atoms": {
+       "version": "1.1.1",
+       "resolved": "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.1.tgz",
+@@ -1395,7 +1726,6 @@
+       "integrity": "sha512-XoMjdBOwe/esVgEvLmNsD3IRHkm7fbKIUGvrleloJXUZgDHig2IPWNniv+GwjyJXzuNqVjlr5+4yVUZjycJwfQ==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "@eslint-community/eslint-utils": "^4.8.0",
+         "@eslint-community/regexpp": "^4.12.1",
+@@ -1564,6 +1894,16 @@
+         "node": ">=4.0"
+       }
+     },
++    "node_modules/estree-walker": {
++      "version": "3.0.3",
++      "resolved": "https://registry.npmjs.org/estree-walker/-/estree-walker-3.0.3.tgz",
++      "integrity": "sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/estree": "^1.0.0"
++      }
++    },
+     "node_modules/esutils": {
+       "version": "2.0.3",
+       "resolved": "https://registry.npmjs.org/esutils/-/esutils-2.0.3.tgz",
+@@ -1574,6 +1914,16 @@
+         "node": ">=0.10.0"
+       }
+     },
++    "node_modules/expect-type": {
++      "version": "1.4.0",
++      "resolved": "https://registry.npmjs.org/expect-type/-/expect-type-1.4.0.tgz",
++      "integrity": "sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=12.0.0"
++      }
++    },
+     "node_modules/fast-deep-equal": {
+       "version": "3.1.3",
+       "resolved": "https://registry.npmjs.org/fast-deep-equal/-/fast-deep-equal-3.1.3.tgz",
+@@ -1875,6 +2225,19 @@
+         "hermes-estree": "0.25.1"
+       }
+     },
++    "node_modules/html-encoding-sniffer": {
++      "version": "7.0.0",
++      "resolved": "https://registry.npmjs.org/html-encoding-sniffer/-/html-encoding-sniffer-7.0.0.tgz",
++      "integrity": "sha512-UikN5yr7xsCDAq87Or5or0PAlD3HJJOKVzM05az588WnpDJ4Ux7a2A53Qi6gofGg2/EtvF/H4hCi/TXfCW4Y6w==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@exodus/bytes": "^1.15.1"
++      },
++      "engines": {
++        "node": "^22.13.0 || >=24.0.0"
++      }
++    },
+     "node_modules/ignore": {
+       "version": "5.3.2",
+       "resolved": "https://registry.npmjs.org/ignore/-/ignore-5.3.2.tgz",
+@@ -1912,6 +2275,53 @@
+         "node": ">=0.8.19"
+       }
+     },
++    "node_modules/indent-string": {
++      "version": "4.0.0",
++      "resolved": "https://registry.npmjs.org/indent-string/-/indent-string-4.0.0.tgz",
++      "integrity": "sha512-EdDDZu4A2OyIK7Lr/2zG+w5jmbuk1DVBnEwREQvBzspBJkCEbRa8GxU1lghYcaGJCnRWibjDXlq779X1/y5xwg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/is-alphabetical": {
++      "version": "2.0.1",
++      "resolved": "https://registry.npmjs.org/is-alphabetical/-/is-alphabetical-2.0.1.tgz",
++      "integrity": "sha512-FWyyY60MeTNyeSRpkM2Iry0G9hpr7/9kD40mD/cGQEuilcZYS4okz8SN2Q6rLCJ8gbCt6fN+rC+6tMGS99LaxQ==",
++      "dev": true,
++      "license": "MIT",
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/wooorm"
++      }
++    },
++    "node_modules/is-alphanumerical": {
++      "version": "2.0.1",
++      "resolved": "https://registry.npmjs.org/is-alphanumerical/-/is-alphanumerical-2.0.1.tgz",
++      "integrity": "sha512-hmbYhX/9MUMF5uh7tOXyK/n0ZvWpad5caBA17GsC6vyuCqaWliRG5K1qS9inmUhEMaOBIW7/whAnSwveW/LtZw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "is-alphabetical": "^2.0.0",
++        "is-decimal": "^2.0.0"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/wooorm"
++      }
++    },
++    "node_modules/is-decimal": {
++      "version": "2.0.1",
++      "resolved": "https://registry.npmjs.org/is-decimal/-/is-decimal-2.0.1.tgz",
++      "integrity": "sha512-AAB9hiomQs5DXWcRB1rqsxGUstbRroFOPPVAomNk/3XHR5JyEZChOyTWe2oayKnsSsr/kcGqF+z6yuH6HHpN0A==",
++      "dev": true,
++      "license": "MIT",
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/wooorm"
++      }
++    },
+     "node_modules/is-extglob": {
+       "version": "2.1.1",
+       "resolved": "https://registry.npmjs.org/is-extglob/-/is-extglob-2.1.1.tgz",
+@@ -1935,6 +2345,13 @@
+         "node": ">=0.10.0"
+       }
+     },
++    "node_modules/is-potential-custom-element-name": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/is-potential-custom-element-name/-/is-potential-custom-element-name-1.0.1.tgz",
++      "integrity": "sha512-bCYeRA2rVibKZd+s2625gGnGF/t7DSqDs4dP7CrLA1m7jKWz6pps0LpYLJN8Q64HtmPKJ1hrN3nzPNKFEKOUiQ==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/isexe": {
+       "version": "2.0.0",
+       "resolved": "https://registry.npmjs.org/isexe/-/isexe-2.0.0.tgz",
+@@ -1962,6 +2379,54 @@
+         "js-yaml": "bin/js-yaml.js"
+       }
+     },
++    "node_modules/jsdom": {
++      "version": "31.0.0",
++      "resolved": "https://registry.npmjs.org/jsdom/-/jsdom-31.0.0.tgz",
++      "integrity": "sha512-xAkhD9z1eyFC5+QUi9K24CaZJgdCQ2GOGLW1GdVDoQvkp/AxEH9TQ0pAplPOlIiV92hfcgnFOADZypbjgbBT6Q==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@exodus/bytes": "^1.16.0",
++        "bcp-47": "^2.1.2",
++        "bcp-47-match": "^2.0.3",
++        "data-urls": "^8.0.0",
++        "decimal.js": "^10.6.0",
++        "html-encoding-sniffer": "^7.0.0",
++        "is-potential-custom-element-name": "^1.0.1",
++        "lru-cache": "^11.5.3",
++        "parse5": "^8.1.0",
++        "parse5-parser-stream": "^8.1.0",
++        "saxes": "^6.0.0",
++        "tough-cookie": "^6.0.2",
++        "undici": "^8.12.3",
++        "w3c-xmlserializer": "^6.0.0",
++        "webidl-conversions": "^8.0.1",
++        "whatwg-mimetype": "^5.0.0",
++        "whatwg-url": "^17.3.0",
++        "xml-name-validator": "^5.0.0"
++      },
++      "engines": {
++        "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
++      },
++      "peerDependencies": {
++        "@napi-rs/canvas": "^1.0.13"
++      },
++      "peerDependenciesMeta": {
++        "@napi-rs/canvas": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/jsdom/node_modules/lru-cache": {
++      "version": "11.5.3",
++      "resolved": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.3.tgz",
++      "integrity": "sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg==",
++      "dev": true,
++      "license": "BlueOak-1.0.0",
++      "engines": {
++        "node": "20 || >=22"
++      }
++    },
+     "node_modules/jsesc": {
+       "version": "3.1.0",
+       "resolved": "https://registry.npmjs.org/jsesc/-/jsesc-3.1.0.tgz",
+@@ -2336,6 +2801,27 @@
+         "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0"
+       }
+     },
++    "node_modules/lz-string": {
++      "version": "1.5.0",
++      "resolved": "https://registry.npmjs.org/lz-string/-/lz-string-1.5.0.tgz",
++      "integrity": "sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==",
++      "dev": true,
++      "license": "MIT",
++      "peer": true,
++      "bin": {
++        "lz-string": "bin/bin.js"
++      }
++    },
++    "node_modules/magic-string": {
++      "version": "1.4.5",
++      "resolved": "https://registry.npmjs.org/magic-string/-/magic-string-1.4.5.tgz",
++      "integrity": "sha512-oLLC2+YvQUfAa+vxoufE/yc1icb87M9iXIRqAoR/2EhE/8cb3SF/+Gi0c2By1B+5Vz2e2vQtUvHiu1+63Znh+w==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@jridgewell/sourcemap-codec": "^1.6.0"
++      }
++    },
+     "node_modules/math-intrinsics": {
+       "version": "1.1.0",
+       "resolved": "https://registry.npmjs.org/math-intrinsics/-/math-intrinsics-1.1.0.tgz",
+@@ -2366,6 +2852,16 @@
+         "node": ">= 0.6"
+       }
+     },
++    "node_modules/min-indent": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/min-indent/-/min-indent-1.0.1.tgz",
++      "integrity": "sha512-I9jwMn07Sy/IwOj3zVkVik2JTvgpaykDZEigL6Rx6N9LbMywwUSMtxET+7lVoDLLd3O3IXwJwvuuns8UB/HeAg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=4"
++      }
++    },
+     "node_modules/minimatch": {
+       "version": "3.1.5",
+       "resolved": "https://registry.npmjs.org/minimatch/-/minimatch-3.1.5.tgz",
+@@ -2419,6 +2915,20 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/obug": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/obug/-/obug-3.0.0.tgz",
++      "integrity": "sha512-5vvB5+W7ePv+p3uqxi+RcW1XAzLW0/hxt3/4X4Lc4qHudzOhmBiBwOY6DRob4WnanAEGvNcLjF+KNOufrUoEQw==",
++      "dev": true,
++      "funding": [
++        "https://github.com/sponsors/sxzz",
++        "https://opencollective.com/debug"
++      ],
++      "license": "MIT",
++      "engines": {
++        "node": ">=12.20.0"
++      }
++    },
+     "node_modules/optionator": {
+       "version": "0.9.4",
+       "resolved": "https://registry.npmjs.org/optionator/-/optionator-0.9.4.tgz",
+@@ -2482,6 +2992,32 @@
+         "node": ">=6"
+       }
+     },
++    "node_modules/parse5": {
++      "version": "8.1.1",
++      "resolved": "https://registry.npmjs.org/parse5/-/parse5-8.1.1.tgz",
++      "integrity": "sha512-EcR/6WDcU7b2N3vQSxKALCk9lXGtUMQxXio008OEMBE0kavu/7JLfBEeFPzi43nMqVDSbEn3QCK+BMCc9zO//w==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "entities": "^9.0.0"
++      },
++      "funding": {
++        "url": "https://github.com/inikulin/parse5?sponsor=1"
++      }
++    },
++    "node_modules/parse5-parser-stream": {
++      "version": "8.1.1",
++      "resolved": "https://registry.npmjs.org/parse5-parser-stream/-/parse5-parser-stream-8.1.1.tgz",
++      "integrity": "sha512-hMcVbbUJcQmP8rURWUdYrT1flRiBiBVjq/RYGguJpDUgIXSqdYKlE0CxthmdMWoSlBAuL5bUBa73g0pttSy7Hw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "parse5": "^8.1.1"
++      },
++      "funding": {
++        "url": "https://github.com/inikulin/parse5?sponsor=1"
++      }
++    },
+     "node_modules/path-exists": {
+       "version": "4.0.0",
+       "resolved": "https://registry.npmjs.org/path-exists/-/path-exists-4.0.0.tgz",
+@@ -2510,9 +3046,9 @@
+       "license": "ISC"
+     },
+     "node_modules/picomatch": {
+-      "version": "4.0.3",
+-      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.3.tgz",
+-      "integrity": "sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==",
++      "version": "4.0.7",
++      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz",
++      "integrity": "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==",
+       "dev": true,
+       "license": "MIT",
+       "engines": {
+@@ -2561,6 +3097,36 @@
+         "node": ">= 0.8.0"
+       }
+     },
++    "node_modules/pretty-format": {
++      "version": "27.5.1",
++      "resolved": "https://registry.npmjs.org/pretty-format/-/pretty-format-27.5.1.tgz",
++      "integrity": "sha512-Qb1gy5OrP5+zDf2Bvnzdl3jsTf1qXVMazbvCoKhtKqVs4/YK4ozX4gKQJJVyNe+cajNPn0KoC0MC3FUmaHWEmQ==",
++      "dev": true,
++      "license": "MIT",
++      "peer": true,
++      "dependencies": {
++        "ansi-regex": "^5.0.1",
++        "ansi-styles": "^5.0.0",
++        "react-is": "^17.0.1"
++      },
++      "engines": {
++        "node": "^10.13.0 || ^12.13.0 || ^14.15.0 || >=15.0.0"
++      }
++    },
++    "node_modules/pretty-format/node_modules/ansi-styles": {
++      "version": "5.2.0",
++      "resolved": "https://registry.npmjs.org/ansi-styles/-/ansi-styles-5.2.0.tgz",
++      "integrity": "sha512-Cxwpt2SfTzTtXcfOlzGEee8O+c+MmUgGrNiBcXnuWxuFJHe6a5Hz7qwhwe5OgaSYI0IJvkLqWX1ASG+cJOkEiA==",
++      "dev": true,
++      "license": "MIT",
++      "peer": true,
++      "engines": {
++        "node": ">=10"
++      },
++      "funding": {
++        "url": "https://github.com/chalk/ansi-styles?sponsor=1"
++      }
++    },
+     "node_modules/proxy-from-env": {
+       "version": "1.1.0",
+       "resolved": "https://registry.npmjs.org/proxy-from-env/-/proxy-from-env-1.1.0.tgz",
+@@ -2582,7 +3148,6 @@
+       "resolved": "https://registry.npmjs.org/react/-/react-19.2.4.tgz",
+       "integrity": "sha512-9nfp2hYpCwOjAN+8TZFGhtWEwgvWHXqESH8qT89AT/lWklpLON22Lc8pEtnpsZz7VmawabSU0gCjnj8aC0euHQ==",
+       "license": "MIT",
+-      "peer": true,
+       "engines": {
+         "node": ">=0.10.0"
+       }
+@@ -2592,7 +3157,6 @@
+       "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-19.2.4.tgz",
+       "integrity": "sha512-AXJdLo8kgMbimY95O2aKQqsz2iWi9jMgKJhRBAxECE4IFxfcazB2LmzloIoibJI3C12IlY20+KFaLv+71bUJeQ==",
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "scheduler": "^0.27.0"
+       },
+@@ -2600,6 +3164,14 @@
+         "react": "^19.2.4"
+       }
+     },
++    "node_modules/react-is": {
++      "version": "17.0.2",
++      "resolved": "https://registry.npmjs.org/react-is/-/react-is-17.0.2.tgz",
++      "integrity": "sha512-w2GsyukL62IJnlaff/nRegPQR94C/XXamvMWmSHRJ4y7Ts/4ocGRmTHvOs8PSE6pB3dWOrD/nueuU5sduBsQ4w==",
++      "dev": true,
++      "license": "MIT",
++      "peer": true
++    },
+     "node_modules/react-router": {
+       "version": "7.13.1",
+       "resolved": "https://registry.npmjs.org/react-router/-/react-router-7.13.1.tgz",
+@@ -2638,6 +3210,20 @@
+         "react-dom": ">=18"
+       }
+     },
++    "node_modules/redent": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/redent/-/redent-3.0.0.tgz",
++      "integrity": "sha512-6tDA8g98We0zd0GvVeMT9arEOnTw9qM03L9cJXaCjrip1OO764RDBLBfrB4cwzNGDj5OA5ioymC9GkizgWJDUg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "indent-string": "^4.0.0",
++        "strip-indent": "^3.0.0"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    },
+     "node_modules/resolve-from": {
+       "version": "4.0.0",
+       "resolved": "https://registry.npmjs.org/resolve-from/-/resolve-from-4.0.0.tgz",
+@@ -2654,7 +3240,6 @@
+       "integrity": "sha512-q7j6vvarRFmKpgJUT8HCAUljkgzEp4LAhPlJUvQhA5LA1SUL36s5QCysMutErzL3EbNOZOkoziSx9iZC4FddKA==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "@oxc-project/types": "=0.120.0",
+         "@rolldown/pluginutils": "1.0.0-rc.10"
+@@ -2690,6 +3275,19 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/saxes": {
++      "version": "6.0.0",
++      "resolved": "https://registry.npmjs.org/saxes/-/saxes-6.0.0.tgz",
++      "integrity": "sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==",
++      "dev": true,
++      "license": "ISC",
++      "dependencies": {
++        "xmlchars": "^2.2.0"
++      },
++      "engines": {
++        "node": ">=v12.22.7"
++      }
++    },
+     "node_modules/scheduler": {
+       "version": "0.27.0",
+       "resolved": "https://registry.npmjs.org/scheduler/-/scheduler-0.27.0.tgz",
+@@ -2745,6 +3343,26 @@
+         "node": ">=0.10.0"
+       }
+     },
++    "node_modules/std-env": {
++      "version": "4.3.0",
++      "resolved": "https://registry.npmjs.org/std-env/-/std-env-4.3.0.tgz",
++      "integrity": "sha512-OtU/EgQ1kIm5KwqQpBC6ZEMXrZRui11w8zgfTWp8cdO9B8OaPsbA8bTHO2P+HNo1VlUTGMVBwPhydu6poeXiag==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/strip-indent": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/strip-indent/-/strip-indent-3.0.0.tgz",
++      "integrity": "sha512-laJTa3Jb+VQpaC6DseHhF7dXVqHTfJPCRDaEbid/drOhgitgYku/letMUqOXFoWV0zIIUbjpdH2t+tYj4bQMRQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "min-indent": "^1.0.0"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    },
+     "node_modules/strip-json-comments": {
+       "version": "3.1.1",
+       "resolved": "https://registry.npmjs.org/strip-json-comments/-/strip-json-comments-3.1.1.tgz",
+@@ -2771,15 +3389,35 @@
+         "node": ">=8"
+       }
+     },
++    "node_modules/tinybench": {
++      "version": "6.2.3",
++      "resolved": "https://registry.npmjs.org/tinybench/-/tinybench-6.2.3.tgz",
++      "integrity": "sha512-Al01C2JIBnO2CXCAPbpAl6sUiOZHeThGtHYNTa51JRw9PyWOCdr+9Ong05R4qg/Sk3+H645E8ov1h2c58ityNw==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=20.0.0"
++      }
++    },
++    "node_modules/tinyexec": {
++      "version": "1.3.1",
++      "resolved": "https://registry.npmjs.org/tinyexec/-/tinyexec-1.3.1.tgz",
++      "integrity": "sha512-GCvB3aoys96IuDFBMcTB46JOR6mdMtAToqwiW8JlWhsoh1mhHi/xn9ss/Dg7N555GiJyEt2qzoG/NHCwM6h1EA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/tinyglobby": {
+-      "version": "0.2.15",
+-      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.15.tgz",
+-      "integrity": "sha512-j2Zq4NyQYG5XMST4cbs02Ak8iJUdxRM0XI5QyxXuZOzKOINmWurp3smXu3y5wDcJrptwpSjgXHzIQxR0omXljQ==",
++      "version": "0.2.17",
++      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
++      "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "fdir": "^6.5.0",
+-        "picomatch": "^4.0.3"
++        "picomatch": "^4.0.4"
+       },
+       "engines": {
+         "node": ">=12.0.0"
+@@ -2788,6 +3426,52 @@
+         "url": "https://github.com/sponsors/SuperchupuDev"
+       }
+     },
++    "node_modules/tldts": {
++      "version": "7.4.19",
++      "resolved": "https://registry.npmjs.org/tldts/-/tldts-7.4.19.tgz",
++      "integrity": "sha512-48dH6aSpQnpbzDUc4vIQZ1VjB8tkK+e8c1yx05/SZK+rkssgjEOlxDd/yU8/a4vGYQ9vRgJr9dwMq9TJ0b3X2Q==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "tldts-core": "^7.4.19"
++      },
++      "bin": {
++        "tldts": "bin/cli.js"
++      }
++    },
++    "node_modules/tldts-core": {
++      "version": "7.4.20",
++      "resolved": "https://registry.npmjs.org/tldts-core/-/tldts-core-7.4.20.tgz",
++      "integrity": "sha512-C630TWXZCZmLq0F2bW4QqwnaaxCQ/svpAqvJwnC4JvgEM5ohhBnGsEzTLSOXcN+xjz+kEaHS5uoWIw2klnqd0A==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/tough-cookie": {
++      "version": "6.1.0",
++      "resolved": "https://registry.npmjs.org/tough-cookie/-/tough-cookie-6.1.0.tgz",
++      "integrity": "sha512-FTxc8u8Kl2tz0Lat1u8ksvcy8bwHRyEMawwTWybo51JqaC6O7SvfuhAKg+Ld6VqyIe2QRJBzY9HA7y2WyFRT2w==",
++      "dev": true,
++      "license": "BSD-3-Clause",
++      "dependencies": {
++        "tldts": "^7.0.5"
++      },
++      "engines": {
++        "node": ">=16"
++      }
++    },
++    "node_modules/tr46": {
++      "version": "7.0.0",
++      "resolved": "https://registry.npmjs.org/tr46/-/tr46-7.0.0.tgz",
++      "integrity": "sha512-BcDSDW+SIGWVOns1Zm6Yg91q9AEj7eaID0QDY9oIqJD1A8dscNwMcl9Sms2DeuWCNov1X0/oXanHGYQBSLwZsg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "punycode": "^2.3.1"
++      },
++      "engines": {
++        "node": "^22.14.0 || >=24.0.0"
++      }
++    },
+     "node_modules/tslib": {
+       "version": "2.8.1",
+       "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
+@@ -2809,6 +3493,16 @@
+         "node": ">= 0.8.0"
+       }
+     },
++    "node_modules/undici": {
++      "version": "8.12.4",
++      "resolved": "https://registry.npmjs.org/undici/-/undici-8.12.4.tgz",
++      "integrity": "sha512-8Mx+uNKKER2bA4AdtedkqRbwUCIJFr2nJckXRe5yrDqzePqwLP7VNcctN8/XdmDSbF7mS+jJKIszlL+vbam1VA==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=22.19.0"
++      }
++    },
+     "node_modules/update-browserslist-db": {
+       "version": "1.2.3",
+       "resolved": "https://registry.npmjs.org/update-browserslist-db/-/update-browserslist-db-1.2.3.tgz",
+@@ -2856,7 +3550,6 @@
+       "integrity": "sha512-wt+Z2qIhfFt85uiyRt5LPU4oVEJBXj8hZNWKeqFG4gRG/0RaRGJ7njQCwzFVjO+v4+Ipmf5CY7VdmZRAYYBPHw==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "lightningcss": "^1.32.0",
+         "picomatch": "^4.0.3",
+@@ -2929,6 +3622,137 @@
+         }
+       }
+     },
++    "node_modules/vitest": {
++      "version": "5.1.0",
++      "resolved": "https://registry.npmjs.org/vitest/-/vitest-5.1.0.tgz",
++      "integrity": "sha512-MzmNFnrwa8v8lF1bLxw3UJ4EREwVOVb75VqJZmUDRjJ6EluK/x9th7qTbaeDk41WxE1GxWqmTXcdsfobfH5sOA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/chai": "^5.2.2",
++        "@vitest/mocker": "5.1.0",
++        "chai": "^6.3.0",
++        "es-module-lexer": "^2.3.2",
++        "expect-type": "^1.4.0",
++        "magic-string": "^1.4.3",
++        "obug": "^3.0.0",
++        "picomatch": "^4.0.7",
++        "std-env": "^4.3.0",
++        "tinybench": "^6.2.2",
++        "tinyexec": "^1.3.1",
++        "tinyglobby": "^0.2.17",
++        "why-is-node-running": "3.2.1"
++      },
++      "bin": {
++        "vitest": "vitest.mjs"
++      },
++      "engines": {
++        "node": "^22.12.0 || ^24.0.0 || >=26.0.0"
++      },
++      "funding": {
++        "url": "https://opencollective.com/vitest"
++      },
++      "peerDependencies": {
++        "@edge-runtime/vm": "*",
++        "@opentelemetry/api": "^1.9.0",
++        "@types/node": "^22.0.0 || >=24.0.0",
++        "@vitest/browser-playwright": "5.1.0",
++        "@vitest/browser-preview": "5.1.0",
++        "@vitest/browser-webdriverio": "^5.0.0-beta.5 || >=5.0.0",
++        "@vitest/coverage-istanbul": "5.1.0",
++        "@vitest/coverage-v8": "5.1.0",
++        "@vitest/ui": "5.1.0",
++        "happy-dom": "*",
++        "jsdom": "*",
++        "vite": "^6.4.0 || ^7.0.0 || ^8.0.0"
++      },
++      "peerDependenciesMeta": {
++        "@edge-runtime/vm": {
++          "optional": true
++        },
++        "@opentelemetry/api": {
++          "optional": true
++        },
++        "@types/node": {
++          "optional": true
++        },
++        "@vitest/browser-playwright": {
++          "optional": true
++        },
++        "@vitest/browser-preview": {
++          "optional": true
++        },
++        "@vitest/browser-webdriverio": {
++          "optional": true
++        },
++        "@vitest/coverage-istanbul": {
++          "optional": true
++        },
++        "@vitest/coverage-v8": {
++          "optional": true
++        },
++        "@vitest/ui": {
++          "optional": true
++        },
++        "happy-dom": {
++          "optional": true
++        },
++        "jsdom": {
++          "optional": true
++        },
++        "vite": {
++          "optional": false
++        }
++      }
++    },
++    "node_modules/w3c-xmlserializer": {
++      "version": "6.0.0",
++      "resolved": "https://registry.npmjs.org/w3c-xmlserializer/-/w3c-xmlserializer-6.0.0.tgz",
++      "integrity": "sha512-4Nsy8K5Tr6SPDH9jhKJOHf7ChDrc1zufZTVSF7x72hwuEXBqxqk9G6cK+K2NRUtB3iELRJqjXb4JPDMBjMTl2Q==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "xml-name-validator": "^5.0.0"
++      },
++      "engines": {
++        "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
++      }
++    },
++    "node_modules/webidl-conversions": {
++      "version": "8.0.1",
++      "resolved": "https://registry.npmjs.org/webidl-conversions/-/webidl-conversions-8.0.1.tgz",
++      "integrity": "sha512-BMhLD/Sw+GbJC21C/UgyaZX41nPt8bUTg+jWyDeg7e7YN4xOM05YPSIXceACnXVtqyEw/LMClUQMtMZ+PGGpqQ==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "engines": {
++        "node": ">=20"
++      }
++    },
++    "node_modules/whatwg-mimetype": {
++      "version": "5.0.0",
++      "resolved": "https://registry.npmjs.org/whatwg-mimetype/-/whatwg-mimetype-5.0.0.tgz",
++      "integrity": "sha512-sXcNcHOC51uPGF0P/D4NVtrkjSU2fNsm9iog4ZvZJsL3rjoDAzXZhkm2MWt1y+PUdggKAYVoMAIYcs78wJ51Cw==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=20"
++      }
++    },
++    "node_modules/whatwg-url": {
++      "version": "17.3.0",
++      "resolved": "https://registry.npmjs.org/whatwg-url/-/whatwg-url-17.3.0.tgz",
++      "integrity": "sha512-KwOAJrpf+GTgBvcBQJcP38sMF0DsQKdwtG+TxM2pW44P6E5k0hDbWrDmyuJDIF0Uef0aQq0ZoJs+5oI+k8ddhg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@exodus/bytes": "^1.16.0",
++        "tr46": "^7.0.0",
++        "webidl-conversions": "^8.0.1"
++      },
++      "engines": {
++        "node": "^22.14.0 || >=24.0.0"
++      }
++    },
+     "node_modules/which": {
+       "version": "2.0.2",
+       "resolved": "https://registry.npmjs.org/which/-/which-2.0.2.tgz",
+@@ -2945,6 +3769,19 @@
+         "node": ">= 8"
+       }
+     },
++    "node_modules/why-is-node-running": {
++      "version": "3.2.1",
++      "resolved": "https://registry.npmjs.org/why-is-node-running/-/why-is-node-running-3.2.1.tgz",
++      "integrity": "sha512-Tb2FUhB4vUsGQlfSquQLYkApkuPAFQXGFzxWKHHumVz2dK+X1RUm/HnID4+TfIGYJ1kTcwOaCk/buYCEJr6YjQ==",
++      "dev": true,
++      "license": "MIT",
++      "bin": {
++        "why-is-node-running": "cli.js"
++      },
++      "engines": {
++        "node": ">=20.11"
++      }
++    },
+     "node_modules/word-wrap": {
+       "version": "1.2.5",
+       "resolved": "https://registry.npmjs.org/word-wrap/-/word-wrap-1.2.5.tgz",
+@@ -2955,6 +3792,23 @@
+         "node": ">=0.10.0"
+       }
+     },
++    "node_modules/xml-name-validator": {
++      "version": "5.0.0",
++      "resolved": "https://registry.npmjs.org/xml-name-validator/-/xml-name-validator-5.0.0.tgz",
++      "integrity": "sha512-EvGK8EJ3DhaHfbRlETOWAS5pO9MZITeauHKJyb8wyajUfQUenkIg2MvLDTZ4T/TgIcm3HU0TFBgWWboAZ30UHg==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/xmlchars": {
++      "version": "2.2.0",
++      "resolved": "https://registry.npmjs.org/xmlchars/-/xmlchars-2.2.0.tgz",
++      "integrity": "sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/yallist": {
+       "version": "3.1.1",
+       "resolved": "https://registry.npmjs.org/yallist/-/yallist-3.1.1.tgz",
+@@ -2981,7 +3835,6 @@
+       "integrity": "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "funding": {
+         "url": "https://github.com/sponsors/colinhacks"
+       }
+diff --git a/front-end/package.json b/front-end/package.json
+index 90785e1..ad993e8 100644
+--- a/front-end/package.json
++++ b/front-end/package.json
+@@ -7,6 +7,7 @@
+     "run": "vite",
+     "build": "vite build",
+     "lint": "eslint .",
++    "test": "vitest run",
+     "preview": "vite preview"
+   },
+   "dependencies": {
+@@ -20,6 +21,9 @@
+     "@babel/core": "^7.29.0",
+     "@eslint/js": "^9.39.4",
+     "@rolldown/plugin-babel": "^0.2.1",
++    "@testing-library/jest-dom": "^7.0.1",
++    "@testing-library/react": "^16.3.3",
++    "@testing-library/user-event": "^14.6.8",
+     "@types/react": "^19.2.14",
+     "@types/react-dom": "^19.2.3",
+     "@vitejs/plugin-react": "^6.0.1",
+@@ -28,6 +32,8 @@
+     "eslint-plugin-react-hooks": "^7.0.1",
+     "eslint-plugin-react-refresh": "^0.5.2",
+     "globals": "^17.4.0",
+-    "vite": "^8.0.1"
++    "jsdom": "^31.0.0",
++    "vite": "^8.0.1",
++    "vitest": "^5.1.0"
+   }
+ }
+diff --git a/front-end/src/App.jsx b/front-end/src/App.jsx
+index f43b982..c55af04 100644
+--- a/front-end/src/App.jsx
++++ b/front-end/src/App.jsx
+@@ -12,6 +12,7 @@ import RolesPage       from './pages/RolesPage'
+ import ConfigPage      from './pages/ConfigPage'
+ import PerfilPage      from './pages/PerfilPage'
+ import NaoAutorizado   from './pages/NaoAutorizado'
++import MesaPage        from './pages/public/MesaPage'
+ 
+ function Guard({ children, perm }) {
+   const { user, loading, hasPermission } = useAuth()
+@@ -32,6 +33,8 @@ function AppRoutes() {
+     <Routes>
+       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
+       <Route path="/nao-autorizado" element={<NaoAutorizado />} />
++      {/* Pública: cliente na mesa, sem login (o acesso é pelo token do QR code) */}
++      <Route path="/mesa/:numero" element={<MesaPage />} />
+       <Route path="/" element={<Guard><AppLayout /></Guard>}>
+         <Route index               element={<Guard perm="view_dashboard">  <Dashboard      /></Guard>} />
+         <Route path="pedidos"      element={<Guard perm="view_orders">      <PedidosPage    /></Guard>} />
+diff --git a/front-end/src/components/mesa/BoasVindas.jsx b/front-end/src/components/mesa/BoasVindas.jsx
+new file mode 100644
+index 0000000..9a437bb
+--- /dev/null
++++ b/front-end/src/components/mesa/BoasVindas.jsx
+@@ -0,0 +1,49 @@
++import { useEffect } from 'react'
++
++// Tempo até seguir sozinho para o cardápio. O cliente também pode tocar para pular.
++const DURACAO_MS = 3400
++
++function Xicara() {
++  return (
++    <svg viewBox="0 0 160 150" width="150" height="140" role="img" aria-label="Xícara de café">
++      <ellipse cx="80" cy="130" rx="60" ry="10" fill="#2e2e2e" stroke="#c9a84c" strokeWidth="2" />
++      <path d="M122 70 C150 66 150 104 118 100" fill="none" stroke="#c9a84c" strokeWidth="7" strokeLinecap="round" />
++      <path d="M38 60 H122 V84 C122 110 104 126 80 126 C56 126 38 110 38 84 Z" fill="#1c1c1c" stroke="#c9a84c" strokeWidth="3" />
++      <ellipse cx="80" cy="60" rx="42" ry="9" fill="#5a3a22" stroke="#e8c97a" strokeWidth="2" />
++      <path d="M62 46 C54 36 70 30 62 18" className="mesa-vapor v1" />
++      <path d="M80 46 C72 36 88 30 80 14" className="mesa-vapor v2" />
++      <path d="M98 46 C90 36 106 30 98 18" className="mesa-vapor v3" />
++    </svg>
++  )
++}
++
++export default function BoasVindas({ nomeCafe, numeroMesa, onComecar }) {
++  useEffect(() => {
++    const t = setTimeout(onComecar, DURACAO_MS)
++    return () => clearTimeout(t)
++  }, [onComecar])
++
++  return (
++    <section className="mesa-boasvindas" aria-label="Boas-vindas">
++      <div className="mesa-palco">
++        <div className="mesa-cup-pulo">
++          <div className="mesa-cup-giro"><Xicara /></div>
++        </div>
++        <div className="mesa-sombra" aria-hidden="true" />
++      </div>
++
++      <div className="mesa-boasvindas-texto">
++        <p className="mesa-pill">Mesa {numeroMesa}</p>
++        <h1>
++          Seja muito bem-vindo à Cafeteria
++          <span>{nomeCafe}</span>
++        </h1>
++        <p className="mesa-sub">Faça o seu pedido pelo celular, sem fila.</p>
++      </div>
++
++      <button type="button" className="mesa-btn mesa-btn-ghost mesa-comecar" onClick={onComecar}>
++        Toque para começar
++      </button>
++    </section>
++  )
++}
+diff --git a/front-end/src/components/mesa/Cardapio.jsx b/front-end/src/components/mesa/Cardapio.jsx
+new file mode 100644
+index 0000000..783466e
+--- /dev/null
++++ b/front-end/src/components/mesa/Cardapio.jsx
+@@ -0,0 +1,123 @@
++import { useState } from 'react'
++import { Coffee, Minus, Plus } from 'lucide-react'
++import { emCentavos, formatarCentavos, LIMITES, quantidadeTotal } from '../../lib/carrinho'
++import { urlImagem } from '../../services/publicoApi'
++
++const ROTULOS = { cafe: 'Cafés', salgado: 'Salgados', doce: 'Doces' }
++const rotulo = (cat) => ROTULOS[cat] || cat.charAt(0).toUpperCase() + cat.slice(1)
++
++function agrupar(produtos) {
++  const grupos = new Map()
++  for (const p of produtos) {
++    if (!grupos.has(p.categoria)) grupos.set(p.categoria, [])
++    grupos.get(p.categoria).push(p)
++  }
++  return [...grupos.entries()]
++}
++
++function Imagem({ produto }) {
++  const [falhou, setFalhou] = useState(false)
++  const src = urlImagem(produto.imagem_url)
++  if (!src || falhou) {
++    return <div className="mesa-img mesa-img-vazia" aria-hidden="true"><Coffee size={28} /></div>
++  }
++  return <img className="mesa-img" src={src} alt="" loading="lazy" onError={() => setFalhou(true)} />
++}
++
++export function Stepper({ produto, quantidade, maximo, onAlterar }) {
++  return (
++    <div className="mesa-stepper" role="group" aria-label={`Quantidade de ${produto.nome}`}>
++      <button type="button" aria-label={`Diminuir ${produto.nome}`} onClick={() => onAlterar(produto, -1)}>
++        <Minus size={16} />
++      </button>
++      <output aria-live="polite">{quantidade}</output>
++      <button type="button" aria-label={`Aumentar ${produto.nome}`} disabled={quantidade >= maximo} onClick={() => onAlterar(produto, 1)}>
++        <Plus size={16} />
++      </button>
++    </div>
++  )
++}
++
++function ProdutoCard({ produto, quantidade, onAlterar }) {
++  const maximo = Math.min(produto.max_quantidade ?? LIMITES.maxQuantidadePorItem, LIMITES.maxQuantidadePorItem)
++  return (
++    <li className={`mesa-card${produto.disponivel ? '' : ' esgotado'}`}>
++      <Imagem produto={produto} />
++      <div className="mesa-card-corpo">
++        <h4>{produto.nome}</h4>
++        {produto.descricao && <p className="mesa-desc">{produto.descricao}</p>}
++        <div className="mesa-card-rodape">
++          <span className="mesa-preco">{formatarCentavos(emCentavos(produto.preco))}</span>
++          {!produto.disponivel ? (
++            <button type="button" className="mesa-btn mesa-btn-peq" disabled>Indisponível</button>
++          ) : quantidade === 0 ? (
++            <button type="button" className="mesa-btn mesa-btn-ouro mesa-btn-peq" aria-label={`Incluir ${produto.nome}`} onClick={() => onAlterar(produto, 1)}>
++              Incluir
++            </button>
++          ) : (
++            <Stepper produto={produto} quantidade={quantidade} maximo={maximo} onAlterar={onAlterar} />
++          )}
++        </div>
++      </div>
++    </li>
++  )
++}
++
++export default function Cardapio({
++  nomeCafe, numeroMesa, estado, erro, aviso, produtos, carrinho, totalEmCentavos,
++  onAlterar, onAvancar, onTentarNovamente,
++}) {
++  const qtd = quantidadeTotal(carrinho)
++
++  return (
++    <section className="mesa-tela" aria-label="Cardápio">
++      <header className="mesa-topo">
++        <span className="mesa-marca">{nomeCafe}</span>
++        <span className="mesa-pill">Mesa {numeroMesa}</span>
++      </header>
++
++      <h2 className="mesa-titulo">Faça o seu pedido</h2>
++
++      {aviso && <p role="status" className="mesa-aviso">{aviso}</p>}
++
++      {estado === 'carregando' && (
++        <div className="mesa-skeletons" aria-busy="true" aria-label="Carregando cardápio">
++          <div /><div /><div />
++        </div>
++      )}
++
++      {estado === 'erro' && (
++        <div className="mesa-erro" role="alert">
++          <p>{erro}</p>
++          <button type="button" className="mesa-btn mesa-btn-ouro" onClick={onTentarNovamente}>Tentar de novo</button>
++        </div>
++      )}
++
++      {estado === 'pronto' && produtos.length === 0 && (
++        <p className="mesa-vazio">O cardápio está indisponível no momento. Chame um atendente.</p>
++      )}
++
++      {estado === 'pronto' && agrupar(produtos).map(([cat, lista]) => (
++        <section key={cat} aria-label={rotulo(cat)}>
++          <h3 className="mesa-categoria">{rotulo(cat)}</h3>
++          <ul className="mesa-lista">
++            {lista.map((p) => (
++              <ProdutoCard key={p.id} produto={p} quantidade={carrinho[p.id] || 0} onAlterar={onAlterar} />
++            ))}
++          </ul>
++        </section>
++      ))}
++
++      {qtd > 0 && (
++        <div className="mesa-barra">
++          <button type="button" className="mesa-btn mesa-btn-ouro mesa-btn-grande" onClick={onAvancar}>
++            <span>Avançar</span>
++            <span className="mesa-barra-info" aria-live="polite">
++              {qtd} {qtd === 1 ? 'item' : 'itens'} · {formatarCentavos(totalEmCentavos)}
++            </span>
++          </button>
++        </div>
++      )}
++    </section>
++  )
++}
+diff --git a/front-end/src/components/mesa/Confirmacao.jsx b/front-end/src/components/mesa/Confirmacao.jsx
+new file mode 100644
+index 0000000..3a5144a
+--- /dev/null
++++ b/front-end/src/components/mesa/Confirmacao.jsx
+@@ -0,0 +1,17 @@
++import { Check } from 'lucide-react'
++import { emCentavos, formatarCentavos } from '../../lib/carrinho'
++
++export default function Confirmacao({ pedido, onNovoPedido }) {
++  return (
++    <section className="mesa-tela mesa-confirmacao" aria-label="Pedido enviado">
++      <div className="mesa-check" aria-hidden="true"><Check size={44} /></div>
++      <h2 className="mesa-titulo">Pedido enviado!</h2>
++      <p>Pedido <strong>#{pedido.id}</strong> · Mesa {pedido.mesa}</p>
++      <p className="mesa-sub">
++        Aguarde um instante: a equipe já recebeu o seu pedido e logo ele chega à sua mesa.
++      </p>
++      <p className="mesa-total"><span>Total</span><strong>{formatarCentavos(emCentavos(pedido.total))}</strong></p>
++      <button type="button" className="mesa-btn mesa-btn-ghost" onClick={onNovoPedido}>Fazer outro pedido</button>
++    </section>
++  )
++}
+diff --git a/front-end/src/components/mesa/Resumo.jsx b/front-end/src/components/mesa/Resumo.jsx
+new file mode 100644
+index 0000000..619b438
+--- /dev/null
++++ b/front-end/src/components/mesa/Resumo.jsx
+@@ -0,0 +1,64 @@
++import { emCentavos, formatarCentavos, LIMITES } from '../../lib/carrinho'
++import { Stepper } from './Cardapio'
++
++export default function Resumo({
++  nomeCafe, numeroMesa, itens, totalEmCentavos, observacao, enviando, erro,
++  onObservacao, onAlterar, onVoltar, onConcluir,
++}) {
++  return (
++    <section className="mesa-tela" aria-label="Resumo do pedido">
++      <header className="mesa-topo">
++        <span className="mesa-marca">{nomeCafe}</span>
++        <span className="mesa-pill">Mesa {numeroMesa}</span>
++      </header>
++
++      <h2 className="mesa-titulo">Seu pedido</h2>
++
++      {itens.length === 0 ? (
++        <p className="mesa-vazio">Seu pedido está vazio. Volte e escolha algo gostoso.</p>
++      ) : (
++        <ul className="mesa-resumo-lista">
++          {itens.map(({ produto, quantidade, subtotal }) => (
++            <li key={produto.id} className="mesa-resumo-item">
++              <div>
++                <strong>{produto.nome}</strong>
++                <span className="mesa-desc">{formatarCentavos(emCentavos(produto.preco))} cada</span>
++              </div>
++              <Stepper
++                produto={produto}
++                quantidade={quantidade}
++                maximo={Math.min(produto.max_quantidade ?? LIMITES.maxQuantidadePorItem, LIMITES.maxQuantidadePorItem)}
++                onAlterar={onAlterar}
++              />
++              <span className="mesa-preco">{formatarCentavos(subtotal)}</span>
++            </li>
++          ))}
++        </ul>
++      )}
++
++      <div className="mesa-obs">
++        <label htmlFor="mesa-obs">Observações (opcional)</label>
++        <textarea
++          id="mesa-obs"
++          rows={3}
++          maxLength={LIMITES.maxObservacao}
++          placeholder="Ex.: Café sem açúcar"
++          value={observacao}
++          onChange={(e) => onObservacao(e.target.value)}
++        />
++        <small>{observacao.length}/{LIMITES.maxObservacao}</small>
++      </div>
++
++      <p className="mesa-total"><span>Total</span><strong>{formatarCentavos(totalEmCentavos)}</strong></p>
++
++      {erro && <p className="mesa-erro" role="alert">{erro}</p>}
++
++      <div className="mesa-acoes">
++        <button type="button" className="mesa-btn mesa-btn-ghost" onClick={onVoltar} disabled={enviando}>Voltar</button>
++        <button type="button" className="mesa-btn mesa-btn-ouro mesa-btn-grande" onClick={onConcluir} disabled={enviando || itens.length === 0}>
++          {enviando ? 'Enviando…' : 'Concluir pedido'}
++        </button>
++      </div>
++    </section>
++  )
++}
+diff --git a/front-end/src/config/cafe.js b/front-end/src/config/cafe.js
+new file mode 100644
+index 0000000..4a72db8
+--- /dev/null
++++ b/front-end/src/config/cafe.js
+@@ -0,0 +1,2 @@
++// Nome exibido na tela de boas-vindas. Defina VITE_NOME_CAFE no build para trocar.
++export const NOME_CAFE = import.meta.env.VITE_NOME_CAFE || 'Café Grão'
+diff --git a/front-end/src/lib/carrinho.js b/front-end/src/lib/carrinho.js
+new file mode 100644
+index 0000000..617a3b0
+--- /dev/null
++++ b/front-end/src/lib/carrinho.js
+@@ -0,0 +1,85 @@
++// Lógica pura do carrinho (sem React), para ser fácil de testar.
++// O carrinho é um objeto { [produtoId]: quantidade }.
++// Os limites espelham os do back-end (publicoController.js).
++
++export const LIMITES = Object.freeze({
++  maxQuantidadePorItem: 10,
++  maxItensDistintos: 20,
++  maxObservacao: 200,
++})
++
++const formatador = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
++
++// O preço chega como texto ("9.00"). Trabalhamos em centavos para não ter erro de ponto flutuante.
++export const emCentavos = (preco) => Math.round(Number(preco) * 100)
++export const formatarCentavos = (centavos) => formatador.format(centavos / 100)
++
++function maximoDo(produto) {
++  const m = produto && Number.isInteger(produto.max_quantidade) ? produto.max_quantidade : LIMITES.maxQuantidadePorItem
++  return Math.min(m, LIMITES.maxQuantidadePorItem)
++}
++
++// Soma (ou subtrai) quantidade de um produto, respeitando os limites.
++// `produto` é opcional: quando informado, o teto é o `max_quantidade` dele.
++export function alterar(carrinho, produtoId, delta, produto) {
++  const atual = carrinho[produtoId] || 0
++  const maximo = maximoDo(produto)
++  const nova = Math.min(atual + delta, maximo)
++
++  if (nova <= 0) {
++    if (!(produtoId in carrinho)) return carrinho
++    const { [produtoId]: _removido, ...resto } = carrinho
++    return resto
++  }
++  if (atual === 0 && Object.keys(carrinho).length >= LIMITES.maxItensDistintos) return carrinho
++  if (nova === atual) return carrinho
++  return { ...carrinho, [produtoId]: nova }
++}
++
++export const quantidadeTotal = (carrinho) => Object.values(carrinho).reduce((soma, q) => soma + q, 0)
++
++// Linhas do carrinho na ordem do cardápio; ignora o que não está no cardápio.
++export function linhas(carrinho, produtos) {
++  return produtos
++    .filter((p) => carrinho[p.id] > 0)
++    .map((p) => ({
++      produto: p,
++      quantidade: carrinho[p.id],
++      subtotal: emCentavos(p.preco) * carrinho[p.id],
++    }))
++}
++
++export const totalCentavos = (carrinho, produtos) =>
++  linhas(carrinho, produtos).reduce((soma, l) => soma + l.subtotal, 0)
++
++// Depois de recarregar o cardápio: tira o que sumiu ou esgotou e ajusta quantidades
++// acima do novo máximo. Devolve também o que foi removido/ajustado, para avisar o cliente.
++export function reconciliar(carrinho, produtos) {
++  const porId = new Map(produtos.map((p) => [String(p.id), p]))
++  const novo = {}
++  const removidos = []
++  const ajustados = []
++
++  for (const [id, quantidade] of Object.entries(carrinho)) {
++    const produto = porId.get(id)
++    if (!produto || !produto.disponivel) {
++      removidos.push(produto ? produto.nome : 'Um item')
++      continue
++    }
++    const maximo = maximoDo(produto)
++    if (quantidade > maximo) {
++      novo[id] = maximo
++      ajustados.push(produto.nome)
++    } else {
++      novo[id] = quantidade
++    }
++  }
++  return { carrinho: novo, removidos, ajustados }
++}
++
++// Corpo do POST /publico/mesa/:n/pedidos. O preço NÃO vai: o servidor usa o do banco.
++export function montarPedido(carrinho, observacao) {
++  const itens = Object.entries(carrinho).map(([id, quantidade]) => ({ produto_id: Number(id), quantidade }))
++  const texto = (observacao || '').trim()
++  return texto ? { itens, observacao: texto } : { itens }
++}
+diff --git a/front-end/src/lib/carrinho.test.js b/front-end/src/lib/carrinho.test.js
+new file mode 100644
+index 0000000..9f9a1a9
+--- /dev/null
++++ b/front-end/src/lib/carrinho.test.js
+@@ -0,0 +1,109 @@
++import { describe, test, expect } from 'vitest'
++import {
++  alterar, emCentavos, formatarCentavos, linhas, LIMITES, montarPedido,
++  quantidadeTotal, reconciliar, totalCentavos,
++} from './carrinho'
++
++const produtos = [
++  { id: 1, nome: 'Espresso', preco: '5.00', disponivel: true, max_quantidade: 10 },
++  { id: 2, nome: 'Cappuccino', preco: '9.00', disponivel: true, max_quantidade: 3 },
++  { id: 3, nome: 'Bolo', preco: '7.50', disponivel: false, max_quantidade: 0 },
++]
++
++describe('dinheiro', () => {
++  test('converte preço em texto para centavos sem erro de ponto flutuante', () => {
++    expect(emCentavos('9.00')).toBe(900)
++    expect(emCentavos('0.10') * 3).toBe(30) // em reais, 0.1 * 3 daria 0.30000000000000004
++    expect(emCentavos('19.99')).toBe(1999)
++  })
++  test('formata em reais', () => {
++    expect(formatarCentavos(2300).replace(/\s/g, ' ')).toBe('R$ 23,00')
++  })
++})
++
++describe('alterar()', () => {
++  test('inclui com +1 e soma', () => {
++    let c = alterar({}, 1, 1, produtos[0])
++    c = alterar(c, 1, 1, produtos[0])
++    expect(c).toEqual({ 1: 2 })
++  })
++  test('chegar a zero remove o item do carrinho', () => {
++    expect(alterar({ 1: 1 }, 1, -1, produtos[0])).toEqual({})
++  })
++  test('diminuir item que não existe não altera nada (mesma referência)', () => {
++    const c = { 2: 1 }
++    expect(alterar(c, 1, -1, produtos[0])).toBe(c)
++  })
++  test('respeita o max_quantidade do produto (estoque)', () => {
++    let c = {}
++    for (let i = 0; i < 8; i++) c = alterar(c, 2, 1, produtos[1])
++    expect(c).toEqual({ 2: 3 })
++  })
++  test('nunca passa do limite por item, mesmo sem produto informado', () => {
++    let c = {}
++    for (let i = 0; i < 30; i++) c = alterar(c, 1, 1)
++    expect(c[1]).toBe(LIMITES.maxQuantidadePorItem)
++  })
++  test('não adiciona o 21º item diferente', () => {
++    const cheio = Object.fromEntries(Array.from({ length: LIMITES.maxItensDistintos }, (_, i) => [i + 1, 1]))
++    expect(alterar(cheio, 999, 1)).toBe(cheio)
++    expect(alterar(cheio, 1, 1)[1]).toBe(2) // mas aumentar um que já existe pode
++  })
++  test('é imutável: não altera o objeto original', () => {
++    const original = { 1: 1 }
++    alterar(original, 1, 1, produtos[0])
++    expect(original).toEqual({ 1: 1 })
++  })
++  test('produto indisponível (max 0) não entra', () => {
++    expect(alterar({}, 3, 1, produtos[2])).toEqual({})
++  })
++})
++
++describe('totais e linhas', () => {
++  const carrinho = { 1: 1, 2: 2 }
++  test('quantidade total', () => expect(quantidadeTotal(carrinho)).toBe(3))
++  test('total em centavos: 5,00 + 2 × 9,00 = 23,00', () => expect(totalCentavos(carrinho, produtos)).toBe(2300))
++  test('linhas seguem a ordem do cardápio e trazem subtotal', () => {
++    const l = linhas({ 2: 2, 1: 1 }, produtos)
++    expect(l.map((x) => [x.produto.id, x.quantidade, x.subtotal])).toEqual([[1, 1, 500], [2, 2, 1800]])
++  })
++  test('ignora itens que não estão no cardápio', () => {
++    expect(linhas({ 99: 2 }, produtos)).toEqual([])
++    expect(totalCentavos({ 99: 2 }, produtos)).toBe(0)
++  })
++})
++
++describe('reconciliar()', () => {
++  test('remove item esgotado e avisa o nome', () => {
++    const r = reconciliar({ 1: 1, 3: 2 }, produtos)
++    expect(r.carrinho).toEqual({ 1: 1 })
++    expect(r.removidos).toEqual(['Bolo'])
++  })
++  test('remove item que sumiu do cardápio', () => {
++    const r = reconciliar({ 99: 1 }, produtos)
++    expect(r.carrinho).toEqual({})
++    expect(r.removidos).toEqual(['Um item'])
++  })
++  test('reduz quantidade acima do novo máximo', () => {
++    const r = reconciliar({ 2: 9 }, produtos)
++    expect(r.carrinho).toEqual({ 2: 3 })
++    expect(r.ajustados).toEqual(['Cappuccino'])
++  })
++  test('carrinho válido passa intacto', () => {
++    const r = reconciliar({ 1: 2, 2: 1 }, produtos)
++    expect(r.carrinho).toEqual({ 1: 2, 2: 1 })
++    expect(r.removidos).toEqual([])
++  })
++})
++
++describe('montarPedido()', () => {
++  test('monta itens numéricos e NÃO envia preço nem total', () => {
++    const p = montarPedido({ 1: 1, 2: 2 }, '')
++    expect(p).toEqual({ itens: [{ produto_id: 1, quantidade: 1 }, { produto_id: 2, quantidade: 2 }] })
++    expect(JSON.stringify(p)).not.toMatch(/preco|total/)
++  })
++  test('inclui a observação com trim; vazia é omitida', () => {
++    expect(montarPedido({ 1: 1 }, '  Café sem açúcar ').observacao).toBe('Café sem açúcar')
++    expect('observacao' in montarPedido({ 1: 1 }, '   ')).toBe(false)
++  })
++})
+diff --git a/front-end/src/lib/sessaoMesa.js b/front-end/src/lib/sessaoMesa.js
+new file mode 100644
+index 0000000..b92f6ea
+--- /dev/null
++++ b/front-end/src/lib/sessaoMesa.js
+@@ -0,0 +1,45 @@
++// Guarda o token da mesa e o carrinho no sessionStorage (vale só para a aba aberta,
++// e sobrevive a um recarregamento da página, comum quando o cliente alterna de app).
++import { LIMITES } from './carrinho'
++
++const chave = (numero, nome) => `cafe:mesa:${numero}:${nome}`
++
++function armazenamento() {
++  try {
++    return window.sessionStorage
++  } catch {
++    return null // modo privado/bloqueado: o app continua funcionando, só não persiste
++  }
++}
++
++// O QR traz o token em ?t=. Guardamos para o caso de recarregar depois de a URL ser limpa.
++export function resolverToken(numero, search) {
++  const s = armazenamento()
++  const token = new URLSearchParams(search).get('t')
++  if (token) {
++    try { s?.setItem(chave(numero, 'token'), token) } catch { /* ignora */ }
++    return token
++  }
++  try { return s?.getItem(chave(numero, 'token')) || null } catch { return null }
++}
++
++export function lerCarrinho(numero) {
++  try {
++    const bruto = JSON.parse(armazenamento()?.getItem(chave(numero, 'carrinho')) || '{}')
++    const limpo = {}
++    for (const [id, q] of Object.entries(bruto)) {
++      if (/^\d+$/.test(id) && Number.isInteger(q) && q > 0 && q <= LIMITES.maxQuantidadePorItem) limpo[id] = q
++    }
++    return limpo
++  } catch {
++    return {}
++  }
++}
++
++export function salvarCarrinho(numero, carrinho) {
++  try {
++    const s = armazenamento()
++    if (Object.keys(carrinho).length === 0) s?.removeItem(chave(numero, 'carrinho'))
++    else s?.setItem(chave(numero, 'carrinho'), JSON.stringify(carrinho))
++  } catch { /* ignora */ }
++}
+diff --git a/front-end/src/lib/sessaoMesa.test.js b/front-end/src/lib/sessaoMesa.test.js
+new file mode 100644
+index 0000000..bc380ac
+--- /dev/null
++++ b/front-end/src/lib/sessaoMesa.test.js
+@@ -0,0 +1,42 @@
++import { describe, test, expect, vi } from 'vitest'
++import { lerCarrinho, resolverToken, salvarCarrinho } from './sessaoMesa'
++
++describe('resolverToken()', () => {
++  test('lê ?t= e guarda para depois que a URL for limpa', () => {
++    expect(resolverToken('7', '?t=abc123')).toBe('abc123')
++    expect(resolverToken('7', '')).toBe('abc123')
++  })
++  test('token é por mesa (mesa 8 não herda o da mesa 7)', () => {
++    resolverToken('7', '?t=abc123')
++    expect(resolverToken('8', '')).toBeNull()
++  })
++  test('sem token em lugar nenhum → null', () => expect(resolverToken('7', '')).toBeNull())
++  test('sessionStorage bloqueado: ainda devolve o token da URL, sem estourar', () => {
++    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('bloqueado') })
++    expect(resolverToken('7', '?t=xyz')).toBe('xyz')
++  })
++})
++
++describe('carrinho persistido', () => {
++  test('salva e recupera', () => {
++    salvarCarrinho('7', { 1: 2, 4: 1 })
++    expect(lerCarrinho('7')).toEqual({ 1: 2, 4: 1 })
++  })
++  test('carrinho vazio remove a chave', () => {
++    salvarCarrinho('7', { 1: 1 })
++    salvarCarrinho('7', {})
++    expect(sessionStorage.getItem('cafe:mesa:7:carrinho')).toBeNull()
++  })
++  test('é por mesa', () => {
++    salvarCarrinho('7', { 1: 1 })
++    expect(lerCarrinho('8')).toEqual({})
++  })
++  test('descarta lixo e valores fora do limite (storage adulterado)', () => {
++    sessionStorage.setItem('cafe:mesa:7:carrinho', JSON.stringify({ 1: 2, abc: 1, 2: -1, 3: 999, 4: 1.5, 5: 'x' }))
++    expect(lerCarrinho('7')).toEqual({ 1: 2 })
++  })
++  test('JSON corrompido → carrinho vazio, sem erro', () => {
++    sessionStorage.setItem('cafe:mesa:7:carrinho', '{quebrado')
++    expect(lerCarrinho('7')).toEqual({})
++  })
++})
+diff --git a/front-end/src/pages/public/MesaPage.jsx b/front-end/src/pages/public/MesaPage.jsx
+new file mode 100644
+index 0000000..fafd0ec
+--- /dev/null
++++ b/front-end/src/pages/public/MesaPage.jsx
+@@ -0,0 +1,179 @@
++import { useCallback, useEffect, useRef, useState } from 'react'
++import { useLocation, useNavigate, useParams } from 'react-router-dom'
++import BoasVindas from '../../components/mesa/BoasVindas'
++import Cardapio from '../../components/mesa/Cardapio'
++import Resumo from '../../components/mesa/Resumo'
++import Confirmacao from '../../components/mesa/Confirmacao'
++import { NOME_CAFE } from '../../config/cafe'
++import { alterar, linhas, montarPedido, reconciliar, totalCentavos } from '../../lib/carrinho'
++import { lerCarrinho, resolverToken, salvarCarrinho } from '../../lib/sessaoMesa'
++import { buscarCardapio, enviarPedido } from '../../services/publicoApi'
++import '../../styles/mesa.css'
++
++function QrInvalido() {
++  return (
++    <main className="mesa-app">
++      <section className="mesa-tela mesa-confirmacao" role="alert">
++        <h1 className="mesa-titulo">QR code inválido</h1>
++        <p className="mesa-sub">
++          Não conseguimos abrir esta mesa. Escaneie o QR code da mesa de novo ou chame um atendente.
++        </p>
++      </section>
++    </main>
++  )
++}
++
++function MesaFluxo({ numero }) {
++  const location = useLocation()
++  const navigate = useNavigate()
++
++  // O token vem do QR (?t=) e é guardado na sessão; fica no estado para sobreviver à limpeza da URL.
++  const [token] = useState(() => resolverToken(numero, location.search))
++
++  const [etapa, setEtapa] = useState('boas-vindas') // boas-vindas | cardapio | resumo | confirmado
++  const [cardapio, setCardapio] = useState({ estado: token ? 'carregando' : 'invalido', produtos: [], erro: '' })
++  const [carrinho, setCarrinho] = useState(() => lerCarrinho(numero))
++  const [observacao, setObservacao] = useState('')
++  const [aviso, setAviso] = useState('')
++  const [enviando, setEnviando] = useState(false)
++  const [erroEnvio, setErroEnvio] = useState('')
++  const [pedido, setPedido] = useState(null)
++  const enviandoRef = useRef(false) // trava duplo clique antes mesmo do re-render
++
++  // Tira o token da barra de endereço (não fica no histórico nem em prints/compartilhamentos).
++  useEffect(() => {
++    if (new URLSearchParams(location.search).has('t')) navigate(location.pathname, { replace: true })
++  }, [location.pathname, location.search, navigate])
++
++  useEffect(() => {
++    document.title = `${NOME_CAFE} · Mesa ${numero}`
++  }, [numero])
++
++  useEffect(() => {
++    salvarCarrinho(numero, carrinho)
++  }, [numero, carrinho])
++
++  const carregar = useCallback(async () => {
++    try {
++      const dados = await buscarCardapio(numero, token)
++      setCardapio({ estado: 'pronto', produtos: dados.produtos, erro: '' })
++      return dados.produtos
++    } catch (e) {
++      setCardapio({ estado: e.status === 401 ? 'invalido' : 'erro', produtos: [], erro: e.message })
++      return null
++    }
++  }, [numero, token])
++
++  useEffect(() => {
++    if (!token) return undefined
++    let ativo = true
++    carregar().then((produtos) => {
++      if (ativo && produtos) setCarrinho((atual) => reconciliar(atual, produtos).carrinho)
++    })
++    return () => { ativo = false }
++  }, [token, carregar])
++
++  const comecar = useCallback(() => setEtapa('cardapio'), [])
++
++  const irPara = (proxima) => {
++    setEtapa(proxima)
++    window.scrollTo?.(0, 0)
++  }
++
++  const aoAlterar = (produto, delta) => {
++    setAviso('')
++    setCarrinho((atual) => alterar(atual, produto.id, delta, produto))
++  }
++
++  const tentarNovamente = () => {
++    setCardapio((c) => ({ ...c, estado: 'carregando' }))
++    carregar().then((produtos) => {
++      if (produtos) setCarrinho((atual) => reconciliar(atual, produtos).carrinho)
++    })
++  }
++
++  const concluir = async () => {
++    if (enviandoRef.current) return
++    enviandoRef.current = true
++    setEnviando(true)
++    setErroEnvio('')
++
++    try {
++      const criado = await enviarPedido(numero, token, montarPedido(carrinho, observacao))
++      setPedido(criado)
++      setCarrinho({})
++      setObservacao('')
++      irPara('confirmado')
++    } catch (e) {
++      if (e.status === 401) {
++        setCardapio((c) => ({ ...c, estado: 'invalido' }))
++      } else if (e.status === 409) {
++        // Alguém levou o último item enquanto o cliente decidia: atualiza e devolve ao cardápio.
++        const produtos = await carregar()
++        if (produtos) setCarrinho(reconciliar(carrinho, produtos).carrinho)
++        setAviso(`${e.message} Revise o seu pedido e tente de novo.`)
++        irPara('cardapio')
++      } else if (e.status === 429) {
++        setErroEnvio('Você fez muitos pedidos em pouco tempo. Chame um atendente.')
++      } else {
++        setErroEnvio(e.message)
++      }
++    } finally {
++      enviandoRef.current = false
++      setEnviando(false)
++    }
++  }
++
++  if (cardapio.estado === 'invalido') return <QrInvalido />
++
++  const itens = linhas(carrinho, cardapio.produtos)
++  const total = totalCentavos(carrinho, cardapio.produtos)
++
++  return (
++    <main className="mesa-app">
++      {etapa === 'boas-vindas' && <BoasVindas nomeCafe={NOME_CAFE} numeroMesa={numero} onComecar={comecar} />}
++
++      {etapa === 'cardapio' && (
++        <Cardapio
++          nomeCafe={NOME_CAFE}
++          numeroMesa={numero}
++          estado={cardapio.estado}
++          erro={cardapio.erro}
++          aviso={aviso}
++          produtos={cardapio.produtos}
++          carrinho={carrinho}
++          totalEmCentavos={total}
++          onAlterar={aoAlterar}
++          onAvancar={() => irPara('resumo')}
++          onTentarNovamente={tentarNovamente}
++        />
++      )}
++
++      {etapa === 'resumo' && (
++        <Resumo
++          nomeCafe={NOME_CAFE}
++          numeroMesa={numero}
++          itens={itens}
++          totalEmCentavos={total}
++          observacao={observacao}
++          enviando={enviando}
++          erro={erroEnvio}
++          onObservacao={setObservacao}
++          onAlterar={aoAlterar}
++          onVoltar={() => irPara('cardapio')}
++          onConcluir={concluir}
++        />
++      )}
++
++      {etapa === 'confirmado' && pedido && (
++        <Confirmacao pedido={pedido} onNovoPedido={() => { setPedido(null); carregar(); irPara('cardapio') }} />
++      )}
++    </main>
++  )
++}
++
++export default function MesaPage() {
++  const { numero } = useParams()
++  // key: trocar de mesa na URL reinicia todo o fluxo (token, carrinho, etapa).
++  return <MesaFluxo key={numero} numero={numero} />
++}
+diff --git a/front-end/src/pages/public/MesaPage.test.jsx b/front-end/src/pages/public/MesaPage.test.jsx
+new file mode 100644
+index 0000000..9c6fe60
+--- /dev/null
++++ b/front-end/src/pages/public/MesaPage.test.jsx
+@@ -0,0 +1,284 @@
++import { describe, test, expect, vi, beforeEach } from 'vitest'
++import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
++import userEvent from '@testing-library/user-event'
++import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
++import MesaPage from './MesaPage'
++
++const PRODUTOS = [
++  { id: 1, nome: 'Espresso', descricao: 'Café puro', preco: '5.00', categoria: 'cafe', imagem_url: '/uploads/produtos/a.png', disponivel: true, max_quantidade: 10 },
++  { id: 2, nome: 'Cappuccino', descricao: 'Com leite', preco: '9.00', categoria: 'cafe', imagem_url: null, disponivel: true, max_quantidade: 2 },
++  { id: 3, nome: 'Croissant', descricao: 'Manteiga', preco: '8.00', categoria: 'salgado', imagem_url: null, disponivel: false, max_quantidade: 0 },
++]
++
++const json = (status, corpo) => Promise.resolve({ ok: status < 400, status, json: async () => corpo })
++
++// Servidor falso. `postHandler` permite simular sucesso, 409, 429, lentidão...
++function instalarFetch({ cardapio = () => json(200, { mesa: 7, produtos: PRODUTOS }), post = () => json(201, { id: 55, mesa: 7, status: 'pendente', total: 23 }) } = {}) {
++  const fn = vi.fn((url, opts = {}) => (opts.method === 'POST' ? post(url, opts) : cardapio(url, opts)))
++  globalThis.fetch = fn
++  return fn
++}
++
++function Local() {
++  const l = useLocation()
++  return <div data-testid="local">{l.pathname + l.search}</div>
++}
++
++function abrir(url = '/mesa/7?t=tok123') {
++  return render(
++    <MemoryRouter initialEntries={[url]}>
++      <Routes><Route path="/mesa/:numero" element={<MesaPage />} /></Routes>
++      <Local />
++    </MemoryRouter>,
++  )
++}
++
++async function irParaCardapio(user) {
++  await user.click(screen.getByRole('button', { name: /toque para começar/i }))
++  await screen.findByText('Espresso')
++}
++
++const posts = (fetchFn) => fetchFn.mock.calls.filter(([, o]) => o?.method === 'POST')
++
++beforeEach(() => instalarFetch())
++
++describe('fluxo completo do cliente', () => {
++  test('boas-vindas → cardápio → incluir → avançar → observação → concluir → confirmação', async () => {
++    const fetchFn = instalarFetch()
++    const user = userEvent.setup()
++    abrir()
++
++    // 1) boas-vindas
++    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/seja muito bem-vindo à cafeteria\s*café grão/i)
++    await irParaCardapio(user)
++
++    // 2) sem itens não existe "Avançar"
++    expect(screen.queryByRole('button', { name: /avançar/i })).not.toBeInTheDocument()
++    expect(screen.getByText('Café puro')).toBeInTheDocument() // descrição
++    expect(screen.getByText(/R\$\s*5,00/)).toBeInTheDocument() // valor
++
++    // 3) incluir 1 Espresso + 2 Cappuccino
++    await user.click(screen.getByRole('button', { name: 'Incluir Espresso' }))
++    await user.click(screen.getByRole('button', { name: 'Incluir Cappuccino' }))
++    await user.click(screen.getByRole('button', { name: 'Aumentar Cappuccino' }))
++    const avancar = screen.getByRole('button', { name: /avançar/i })
++    expect(avancar).toHaveTextContent(/3 itens · R\$\s*23,00/)
++
++    // 4) resumo com observação
++    await user.click(avancar)
++    expect(screen.getByRole('heading', { name: 'Seu pedido' })).toBeInTheDocument()
++    await user.type(screen.getByLabelText(/observações/i), 'Café sem açúcar')
++    await user.click(screen.getByRole('button', { name: /concluir pedido/i }))
++
++    // 5) confirmação
++    expect(await screen.findByRole('heading', { name: /pedido enviado/i })).toBeInTheDocument()
++    expect(screen.getByText(/aguarde um instante/i)).toBeInTheDocument()
++    expect(screen.getByText('#55')).toBeInTheDocument()
++
++    // O que foi para o servidor: token no header, itens e observação, SEM preço/total
++    const [url, opts] = posts(fetchFn)[0]
++    expect(url).toMatch(/\/publico\/mesa\/7\/pedidos$/)
++    expect(opts.headers['x-mesa-token']).toBe('tok123')
++    expect(JSON.parse(opts.body)).toEqual({
++      itens: [{ produto_id: 1, quantidade: 1 }, { produto_id: 2, quantidade: 2 }],
++      observacao: 'Café sem açúcar',
++    })
++  })
++
++  test('"Fazer outro pedido" volta ao cardápio com o carrinho vazio', async () => {
++    const user = userEvent.setup()
++    abrir()
++    await irParaCardapio(user)
++    await user.click(screen.getByRole('button', { name: 'Incluir Espresso' }))
++    await user.click(screen.getByRole('button', { name: /avançar/i }))
++    await user.click(screen.getByRole('button', { name: /concluir pedido/i }))
++    await user.click(await screen.findByRole('button', { name: /fazer outro pedido/i }))
++    expect(await screen.findByRole('button', { name: 'Incluir Espresso' })).toBeInTheDocument()
++    expect(screen.queryByRole('button', { name: /avançar/i })).not.toBeInTheDocument()
++  })
++
++  test('segue sozinho para o cardápio depois da animação', async () => {
++    vi.useFakeTimers()
++    abrir()
++    await act(async () => { await vi.advanceTimersByTimeAsync(3500) })
++    expect(screen.getByRole('heading', { name: /faça o seu pedido/i })).toBeInTheDocument()
++  })
++})
++
++describe('cardápio', () => {
++  test('produto sem estoque aparece como Indisponível e não pode ser incluído', async () => {
++    const user = userEvent.setup()
++    abrir()
++    await irParaCardapio(user)
++    expect(screen.getByRole('button', { name: 'Indisponível' })).toBeDisabled()
++    expect(screen.queryByRole('button', { name: 'Incluir Croissant' })).not.toBeInTheDocument()
++  })
++
++  test('o botão + para no máximo permitido pelo estoque (Cappuccino: 2)', async () => {
++    const user = userEvent.setup()
++    abrir()
++    await irParaCardapio(user)
++    await user.click(screen.getByRole('button', { name: 'Incluir Cappuccino' }))
++    await user.click(screen.getByRole('button', { name: 'Aumentar Cappuccino' }))
++    expect(screen.getByRole('button', { name: 'Aumentar Cappuccino' })).toBeDisabled()
++  })
++
++  test('agrupa por categoria', async () => {
++    const user = userEvent.setup()
++    abrir()
++    await irParaCardapio(user)
++    expect(screen.getByRole('heading', { name: 'Cafés' })).toBeInTheDocument()
++    expect(screen.getByRole('heading', { name: 'Salgados' })).toBeInTheDocument()
++  })
++
++  test('imagem do produto vem da origem da API; sem imagem mostra o ícone padrão', async () => {
++    const user = userEvent.setup()
++    const { container } = abrir()
++    await irParaCardapio(user)
++    const imgs = container.querySelectorAll('img.mesa-img')
++    expect(imgs).toHaveLength(1)
++    expect(imgs[0].getAttribute('src')).toMatch(/^https?:\/\/[^/]+\/uploads\/produtos\/a\.png$/)
++    expect(container.querySelectorAll('.mesa-img-vazia')).toHaveLength(2)
++  })
++
++  test('falha no carregamento mostra erro e "Tentar de novo" funciona', async () => {
++    let tentativa = 0
++    instalarFetch({ cardapio: () => (++tentativa === 1 ? Promise.reject(new TypeError('offline')) : json(200, { mesa: 7, produtos: PRODUTOS })) })
++    const user = userEvent.setup()
++    abrir()
++    await user.click(screen.getByRole('button', { name: /toque para começar/i }))
++    expect(await screen.findByRole('alert')).toHaveTextContent(/sem conexão/i)
++    await user.click(screen.getByRole('button', { name: /tentar de novo/i }))
++    expect(await screen.findByText('Espresso')).toBeInTheDocument()
++  })
++})
++
++describe('segurança da mesa / token', () => {
++  test('sem token no link nem na sessão → "QR code inválido" e nenhuma chamada à API', () => {
++    const fetchFn = instalarFetch()
++    abrir('/mesa/7')
++    expect(screen.getByRole('alert')).toHaveTextContent(/qr code inválido/i)
++    expect(fetchFn).not.toHaveBeenCalled()
++  })
++
++  test('API recusa o token (401) → "QR code inválido"', async () => {
++    instalarFetch({ cardapio: () => json(401, { erro: 'Acesso à mesa não autorizado.' }) })
++    abrir()
++    expect(await screen.findByText(/qr code inválido/i)).toBeInTheDocument()
++  })
++
++  test('o token é tirado da barra de endereço, mas continua valendo ao recarregar', async () => {
++    const { unmount } = abrir('/mesa/7?t=tok123')
++    await waitFor(() => expect(screen.getByTestId('local')).toHaveTextContent(/^\/mesa\/7$/))
++    unmount()
++    const fetchFn = instalarFetch()
++    abrir('/mesa/7') // "recarregou" sem ?t=
++    await waitFor(() => expect(fetchFn).toHaveBeenCalled())
++    expect(fetchFn.mock.calls[0][1].headers['x-mesa-token']).toBe('tok123')
++  })
++})
++
++describe('envio do pedido', () => {
++  test('duplo clique em "Concluir" envia UM pedido só', async () => {
++    let liberar
++    const fetchFn = instalarFetch({ post: () => new Promise((resolve) => { liberar = () => resolve({ ok: true, status: 201, json: async () => ({ id: 9, mesa: 7, status: 'pendente', total: 5 }) }) }) })
++    const user = userEvent.setup()
++    abrir()
++    await irParaCardapio(user)
++    await user.click(screen.getByRole('button', { name: 'Incluir Espresso' }))
++    await user.click(screen.getByRole('button', { name: /avançar/i }))
++    const concluir = screen.getByRole('button', { name: /concluir pedido/i })
++    fireEvent.click(concluir)
++    fireEvent.click(concluir)
++    fireEvent.click(concluir)
++    expect(posts(fetchFn)).toHaveLength(1)
++    expect(await screen.findByRole('button', { name: /enviando/i })).toBeDisabled()
++    await act(async () => liberar())
++    expect(await screen.findByRole('heading', { name: /pedido enviado/i })).toBeInTheDocument()
++    expect(posts(fetchFn)).toHaveLength(1)
++  })
++
++  test('409 (acabou o estoque): volta ao cardápio, atualiza e avisa', async () => {
++    let cardapioCalls = 0
++    instalarFetch({
++      cardapio: () => {
++        cardapioCalls += 1
++        const produtos = cardapioCalls === 1 ? PRODUTOS : PRODUTOS.map((p) => (p.id === 1 ? { ...p, disponivel: false, max_quantidade: 0 } : p))
++        return json(200, { mesa: 7, produtos })
++      },
++      post: () => json(409, { erro: 'Espresso está indisponível ou sem estoque suficiente.' }),
++    })
++    const user = userEvent.setup()
++    abrir()
++    await irParaCardapio(user)
++    await user.click(screen.getByRole('button', { name: 'Incluir Espresso' }))
++    await user.click(screen.getByRole('button', { name: 'Incluir Cappuccino' }))
++    await user.click(screen.getByRole('button', { name: /avançar/i }))
++    await user.click(screen.getByRole('button', { name: /concluir pedido/i }))
++
++    expect(await screen.findByText(/espresso está indisponível.*revise o seu pedido/i)).toBeInTheDocument()
++    expect(screen.getByRole('heading', { name: /faça o seu pedido/i })).toBeInTheDocument()
++    // Espresso esgotou e saiu do carrinho; Cappuccino continua lá
++    expect(screen.getAllByRole('button', { name: 'Indisponível' })).toHaveLength(2)
++    expect(screen.getByRole('button', { name: /avançar/i })).toHaveTextContent(/1 item · R\$\s*9,00/)
++  })
++
++  test('429: mostra aviso e mantém o pedido na tela para tentar depois', async () => {
++    instalarFetch({ post: () => json(429, { erro: 'Muitas requisições. Tente novamente em instantes.' }) })
++    const user = userEvent.setup()
++    abrir()
++    await irParaCardapio(user)
++    await user.click(screen.getByRole('button', { name: 'Incluir Espresso' }))
++    await user.click(screen.getByRole('button', { name: /avançar/i }))
++    await user.click(screen.getByRole('button', { name: /concluir pedido/i }))
++    expect(await screen.findByRole('alert')).toHaveTextContent(/muitos pedidos em pouco tempo/i)
++    expect(screen.getByRole('button', { name: /concluir pedido/i })).toBeEnabled()
++  })
++
++  test('erro de rede no envio: mensagem e botão liberado (carrinho preservado)', async () => {
++    instalarFetch({ post: () => Promise.reject(new TypeError('offline')) })
++    const user = userEvent.setup()
++    abrir()
++    await irParaCardapio(user)
++    await user.click(screen.getByRole('button', { name: 'Incluir Espresso' }))
++    await user.click(screen.getByRole('button', { name: /avançar/i }))
++    await user.click(screen.getByRole('button', { name: /concluir pedido/i }))
++    expect(await screen.findByRole('alert')).toHaveTextContent(/sem conexão/i)
++    expect(screen.getByRole('button', { name: /concluir pedido/i })).toBeEnabled()
++    expect(screen.getByText('Espresso')).toBeInTheDocument()
++  })
++
++  test('observação limitada a 200 caracteres', async () => {
++    const user = userEvent.setup()
++    abrir()
++    await irParaCardapio(user)
++    await user.click(screen.getByRole('button', { name: 'Incluir Espresso' }))
++    await user.click(screen.getByRole('button', { name: /avançar/i }))
++    expect(screen.getByLabelText(/observações/i)).toHaveAttribute('maxlength', '200')
++  })
++
++  test('no resumo dá para remover tudo: Concluir fica desabilitado', async () => {
++    const user = userEvent.setup()
++    abrir()
++    await irParaCardapio(user)
++    await user.click(screen.getByRole('button', { name: 'Incluir Espresso' }))
++    await user.click(screen.getByRole('button', { name: /avançar/i }))
++    await user.click(screen.getByRole('button', { name: 'Diminuir Espresso' }))
++    expect(screen.getByText(/seu pedido está vazio/i)).toBeInTheDocument()
++    expect(screen.getByRole('button', { name: /concluir pedido/i })).toBeDisabled()
++  })
++})
++
++describe('carrinho sobrevive a recarregar a página', () => {
++  test('itens voltam depois de remontar (sessionStorage)', async () => {
++    const user = userEvent.setup()
++    const { unmount } = abrir()
++    await irParaCardapio(user)
++    await user.click(screen.getByRole('button', { name: 'Incluir Espresso' }))
++    unmount()
++
++    abrir('/mesa/7')
++    await user.click(screen.getByRole('button', { name: /toque para começar/i }))
++    expect(await screen.findByRole('button', { name: /avançar/i })).toHaveTextContent(/1 item/)
++  })
++})
+diff --git a/front-end/src/services/publicoApi.js b/front-end/src/services/publicoApi.js
+new file mode 100644
+index 0000000..398624f
+--- /dev/null
++++ b/front-end/src/services/publicoApi.js
+@@ -0,0 +1,40 @@
++// Cliente da API pública (cliente na mesa, SEM login).
++// Separado de services/api.js, que cuida do painel (JWT, refresh e redirecionamento para /login).
++
++const BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000/api'
++
++// As imagens são servidas pela raiz da API (/uploads/...), fora de /api.
++export const API_ORIGIN = BASE.replace(/\/api\/?$/, '')
++
++export function urlImagem(imagemUrl) {
++  if (!imagemUrl) return null
++  if (/^https?:\/\//i.test(imagemUrl)) return imagemUrl
++  return `${API_ORIGIN}${imagemUrl.startsWith('/') ? '' : '/'}${imagemUrl}`
++}
++
++async function requisitar(numero, token, caminho, opcoes = {}) {
++  let resposta
++  try {
++    resposta = await fetch(`${BASE}/publico/mesa/${encodeURIComponent(numero)}${caminho}`, {
++      ...opcoes,
++      headers: { 'Content-Type': 'application/json', 'x-mesa-token': token },
++    })
++  } catch {
++    const erro = new Error('Sem conexão. Verifique o Wi-Fi e tente de novo.')
++    erro.status = 0
++    throw erro
++  }
++
++  const corpo = await resposta.json().catch(() => null)
++  if (!resposta.ok) {
++    const erro = new Error(corpo?.erro || 'Algo deu errado. Tente novamente.')
++    erro.status = resposta.status
++    throw erro
++  }
++  return corpo
++}
++
++export const buscarCardapio = (numero, token) => requisitar(numero, token, '/cardapio')
++
++export const enviarPedido = (numero, token, pedido) =>
++  requisitar(numero, token, '/pedidos', { method: 'POST', body: JSON.stringify(pedido) })
+diff --git a/front-end/src/styles/mesa.css b/front-end/src/styles/mesa.css
+new file mode 100644
+index 0000000..ab8e154
+--- /dev/null
++++ b/front-end/src/styles/mesa.css
+@@ -0,0 +1,90 @@
++/* Tela pública da mesa (cliente). Usa as variáveis de cor do index.css. */
++.mesa-app { min-height: 100dvh; max-width: 560px; margin: 0 auto; background: var(--bg); color: var(--text); font-family: var(--font); }
++.mesa-tela { padding: 18px 16px 120px; }
++.mesa-topo { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
++.mesa-marca { font-family: var(--serif); font-size: 22px; color: var(--gold2); font-weight: 600; }
++.mesa-pill { display: inline-block; padding: 4px 12px; border-radius: 999px; background: var(--gold-bg); border: 1px solid var(--gold-border); color: var(--gold2); font-size: 13px; font-weight: 500; }
++.mesa-titulo { font-family: var(--serif); font-size: 32px; font-weight: 600; margin: 0 0 14px; }
++.mesa-sub, .mesa-desc, .mesa-vazio { color: var(--text2); font-size: 14px; line-height: 1.5; }
++.mesa-desc { display: block; margin: 2px 0 0; }
++
++/* Botões (alvo de toque >= 44px) */
++.mesa-btn { min-height: 44px; padding: 0 18px; border-radius: var(--radius); font-size: 15px; font-weight: 600; border: 1px solid var(--border2); background: var(--bg3); color: var(--text); }
++.mesa-btn:disabled { opacity: .5; cursor: not-allowed; }
++.mesa-btn-ouro { background: var(--gold); border-color: var(--gold); color: #1a1405; }
++.mesa-btn-ghost { background: transparent; color: var(--text2); }
++.mesa-btn-peq { min-height: 38px; padding: 0 16px; font-size: 14px; }
++.mesa-btn-grande { flex: 1; display: flex; justify-content: space-between; align-items: center; min-height: 52px; }
++.mesa-btn:focus-visible, .mesa-stepper button:focus-visible, .mesa-obs textarea:focus-visible { outline: 2px solid var(--gold2); outline-offset: 2px; }
++
++/* Cardápio */
++.mesa-categoria { font-family: var(--serif); font-size: 22px; color: var(--gold); margin: 22px 0 10px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
++.mesa-lista, .mesa-resumo-lista { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
++.mesa-card { display: flex; gap: 12px; padding: 10px; background: var(--bg1); border: 1px solid var(--border); border-radius: var(--radius-lg); }
++.mesa-card.esgotado { opacity: .6; }
++.mesa-img { width: 92px; height: 92px; flex: none; border-radius: var(--radius); object-fit: cover; background: var(--bg3); }
++.mesa-img-vazia { display: grid; place-items: center; color: var(--gold); }
++.mesa-card-corpo { flex: 1; min-width: 0; display: flex; flex-direction: column; }
++.mesa-card-corpo h4 { margin: 0; font-size: 16px; font-weight: 600; }
++.mesa-card-rodape { margin-top: auto; padding-top: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
++.mesa-preco { font-family: var(--mono); font-size: 15px; color: var(--gold2); }
++.mesa-stepper { display: inline-flex; align-items: center; border: 1px solid var(--gold-border); border-radius: 999px; overflow: hidden; }
++.mesa-stepper button { width: 40px; height: 38px; display: grid; place-items: center; color: var(--gold2); background: var(--gold-bg); }
++.mesa-stepper button:disabled { opacity: .35; }
++.mesa-stepper output { min-width: 30px; text-align: center; font-weight: 600; }
++.mesa-aviso { background: var(--amber-bg); border: 1px solid var(--amber); color: var(--amber); padding: 10px 12px; border-radius: var(--radius); font-size: 14px; }
++.mesa-erro { background: var(--red-bg); border: 1px solid var(--red); color: var(--red); padding: 12px; border-radius: var(--radius); font-size: 14px; display: grid; gap: 10px; }
++.mesa-skeletons { display: grid; gap: 12px; }
++.mesa-skeletons div { height: 112px; border-radius: var(--radius-lg); background: linear-gradient(90deg, var(--bg1), var(--bg3), var(--bg1)); background-size: 200% 100%; animation: mesa-shimmer 1.4s linear infinite; }
++@keyframes mesa-shimmer { to { background-position: -200% 0; } }
++
++/* Barra fixa "Avançar" */
++.mesa-barra { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; max-width: 560px; margin: 0 auto; display: flex; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: linear-gradient(to top, var(--bg) 70%, transparent); }
++.mesa-barra-info { font-weight: 500; font-size: 14px; }
++
++/* Resumo */
++.mesa-resumo-item { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; padding: 10px; background: var(--bg1); border: 1px solid var(--border); border-radius: var(--radius-lg); }
++.mesa-resumo-item strong { display: block; font-size: 15px; }
++.mesa-obs { margin-top: 18px; display: grid; gap: 6px; }
++.mesa-obs label { font-size: 13px; color: var(--text2); }
++.mesa-obs textarea { width: 100%; resize: vertical; padding: 12px; background: var(--bg2); border: 1px solid var(--border2); border-radius: var(--radius); color: var(--text); font-size: 16px; /* 16px evita zoom no iOS */ }
++.mesa-obs small { text-align: right; color: var(--text3); }
++.mesa-total { display: flex; justify-content: space-between; align-items: baseline; margin: 18px 0; font-size: 16px; }
++.mesa-total strong { font-family: var(--mono); font-size: 22px; color: var(--gold2); }
++.mesa-acoes { display: flex; gap: 10px; }
++
++/* Confirmação */
++.mesa-confirmacao { display: grid; gap: 10px; justify-items: center; text-align: center; padding-top: 12vh; }
++.mesa-confirmacao .mesa-total { width: 100%; }
++.mesa-check { width: 84px; height: 84px; border-radius: 50%; display: grid; place-items: center; background: var(--green-bg); border: 2px solid var(--green); color: var(--green); animation: mesa-pop .5s cubic-bezier(.2,1.6,.4,1) both; }
++@keyframes mesa-pop { from { transform: scale(0); } to { transform: scale(1); } }
++
++/* Boas-vindas: o café sobe girando e "pula" como item de bloco do Mario */
++.mesa-boasvindas { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 24px 20px calc(24px + env(safe-area-inset-bottom)); text-align: center; overflow: hidden; }
++.mesa-palco { position: relative; height: 170px; width: 170px; perspective: 600px; }
++.mesa-cup-pulo { position: absolute; inset: 0; display: grid; place-items: center; animation: mesa-pulo 1.7s both; }
++.mesa-cup-giro { animation: mesa-giro 1.7s cubic-bezier(.2,.7,.3,1) both; transform-style: preserve-3d; }
++.mesa-sombra { position: absolute; left: 50%; bottom: 8px; width: 110px; height: 12px; margin-left: -55px; border-radius: 50%; background: rgba(0,0,0,.55); filter: blur(4px); animation: mesa-sombra 1.7s both; }
++@keyframes mesa-pulo {
++  0%   { transform: translateY(75vh); animation-timing-function: cubic-bezier(.15,.85,.3,1); }   /* sobe rápido */
++  50%  { transform: translateY(-16vh); animation-timing-function: cubic-bezier(.65,0,.9,.4); }   /* topo do pulo, cai acelerando */
++  74%  { transform: translateY(0) scale(1.1,.86); animation-timing-function: ease-out; }          /* pousa e achata */
++  88%  { transform: translateY(-2.5vh) scale(.97,1.04); animation-timing-function: ease-in; }     /* quica */
++  100% { transform: translateY(0) scale(1); }
++}
++@keyframes mesa-giro { from { transform: rotateY(0); } to { transform: rotateY(1080deg); } }
++@keyframes mesa-sombra { 0%, 45% { opacity: 0; transform: scaleX(.3); } 74% { opacity: 1; transform: scaleX(1.15); } 100% { opacity: .8; transform: scaleX(1); } }
++.mesa-vapor { fill: none; stroke: var(--gold3); stroke-width: 3; stroke-linecap: round; opacity: 0; animation: mesa-vapor 2.2s ease-in-out 1.5s infinite; }
++.mesa-vapor.v2 { animation-delay: 1.8s; } .mesa-vapor.v3 { animation-delay: 2.1s; }
++@keyframes mesa-vapor { 0% { opacity: 0; transform: translateY(6px); } 40% { opacity: .8; } 100% { opacity: 0; transform: translateY(-10px); } }
++.mesa-boasvindas-texto { animation: mesa-sobe .7s ease-out 1.35s both; }
++.mesa-boasvindas h1 { font-family: var(--serif); font-size: 30px; line-height: 1.15; font-weight: 500; margin: 14px 0 8px; }
++.mesa-boasvindas h1 span { display: block; margin-top: 4px; font-size: 44px; font-weight: 700; color: var(--gold2); }
++.mesa-comecar { animation: mesa-sobe .6s ease-out 2s both; }
++@keyframes mesa-sobe { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
++
++/* Quem desativou animações no aparelho vê tudo parado e já visível */
++@media (prefers-reduced-motion: reduce) {
++  .mesa-cup-pulo, .mesa-cup-giro, .mesa-sombra, .mesa-vapor, .mesa-boasvindas-texto, .mesa-comecar, .mesa-check, .mesa-skeletons div { animation: none; }
++  .mesa-sombra { opacity: .8; }
++}
+diff --git a/front-end/src/test/setup.js b/front-end/src/test/setup.js
+new file mode 100644
+index 0000000..d81c7d2
+--- /dev/null
++++ b/front-end/src/test/setup.js
+@@ -0,0 +1,13 @@
++import '@testing-library/jest-dom/vitest'
++import { afterEach, vi } from 'vitest'
++import { cleanup } from '@testing-library/react'
++
++// jsdom não implementa scrollTo (e reclama no console).
++window.scrollTo = vi.fn()
++
++afterEach(() => {
++  cleanup()
++  window.sessionStorage.clear()
++  vi.restoreAllMocks()
++  vi.useRealTimers()
++})
+diff --git a/front-end/vite.config.js b/front-end/vite.config.js
+index 6208d0f..aa053a9 100644
+--- a/front-end/vite.config.js
++++ b/front-end/vite.config.js
+@@ -3,5 +3,10 @@ import react from '@vitejs/plugin-react'
+ 
+ export default defineConfig({
+   plugins: [react()],
+-  server: { port: 5173, host: true }
+-})
+\ No newline at end of file
++  server: { port: 5173, host: true },
++  test: {
++    environment: 'jsdom',
++    setupFiles: './src/test/setup.js',
++    css: false,
++  },
++})
+-- 
+2.43.0
+
