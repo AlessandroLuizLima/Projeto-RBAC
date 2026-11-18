@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useEffect } from 'react'
+import { createContext, useContext, useState } from 'react'
+import { authApi, clearTokens } from '../services/api'
 
 const AuthContext = createContext(null)
 
@@ -8,23 +9,32 @@ export const ROLES = {
   BARISTA: 'barista',
 }
 
-const MOCK_USERS = [
-  { id:1, name:'Rafael Moura',   email:'dono@cafegrao.com',    password:'123456', role:ROLES.ADMIN,   avatar:'RM', cargo:'Proprietário',   since:'2022-03-01' },
-  { id:2, name:'Camila Torres',  email:'gerente@cafegrao.com', password:'123456', role:ROLES.GERENTE, avatar:'CT', cargo:'Gerente',         since:'2022-05-10' },
-  { id:3, name:'Lucas Ferreira', email:'barista@cafegrao.com', password:'123456', role:ROLES.BARISTA, avatar:'LF', cargo:'Barista',         since:'2023-01-15' },
-]
+// O back-end usa "proprietario"; o painel chama esse perfil de "admin".
+const ROLE_DO_BACKEND = { proprietario: ROLES.ADMIN, gerente: ROLES.GERENTE, barista: ROLES.BARISTA }
+const CARGOS = { [ROLES.ADMIN]: 'Proprietário', [ROLES.GERENTE]: 'Gerente', [ROLES.BARISTA]: 'Barista' }
+
+function iniciais(nome = '') {
+  const partes = nome.trim().split(/\s+/).filter(Boolean)
+  return ((partes[0]?.[0] || '') + (partes.length > 1 ? partes.at(-1)[0] : '')).toUpperCase() || '?'
+}
+
+// Converte o usuário da API ({ id, nome, email, role }) no formato usado pelas telas.
+function paraUsuarioDoPainel(u) {
+  const role = ROLE_DO_BACKEND[u.role] || ROLES.BARISTA
+  return { id: u.id, name: u.nome, email: u.email, role, avatar: iniciais(u.nome), cargo: CARGOS[role] }
+}
 
 const PERMISSIONS = {
   [ROLES.ADMIN]:   [
     'view_dashboard','manage_users','manage_roles',
-    'view_orders','manage_orders',
+    'view_orders','manage_orders','manage_tables',
     'view_inventory','manage_inventory',
     'view_products','manage_products',
     'view_reports','manage_settings','view_logs',
   ],
   [ROLES.GERENTE]: [
     'view_dashboard',
-    'view_orders','manage_orders',
+    'view_orders','manage_orders','manage_tables',
     'view_inventory','manage_inventory',
     'view_products','manage_products',
     'view_reports',
@@ -37,29 +47,37 @@ const PERMISSIONS = {
   ],
 }
 
-export function AuthProvider({ children }) {
-  const [user, setUser]       = useState(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
+// Só restaura a sessão se também houver token (sessões antigas do login de teste não têm).
+function lerSessaoSalva() {
+  try {
     const s = localStorage.getItem('cafe_user')
-    if (s) setUser(JSON.parse(s))
-    setLoading(false)
-  }, [])
+    if (s && localStorage.getItem('cafe_token')) return JSON.parse(s)
+    clearTokens()
+  } catch { /* armazenamento indisponível: começa deslogado */ }
+  return null
+}
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(lerSessaoSalva)
+  const loading = false // a sessão é lida de forma síncrona, já no primeiro render
 
   const login = async (email, password) => {
-    await new Promise(r => setTimeout(r, 700))
-    const found = MOCK_USERS.find(u => u.email === email && u.password === password)
-    if (!found) throw new Error('E-mail ou senha incorretos')
-    const { password: _, ...safe } = found
-    setUser(safe)
-    localStorage.setItem('cafe_user', JSON.stringify(safe))
-    return safe
+    let usuario
+    try {
+      usuario = await authApi.login(email, password)
+    } catch (e) {
+      if (/credenciais/i.test(e.message)) throw new Error('E-mail ou senha incorretos')
+      throw e
+    }
+    const u = paraUsuarioDoPainel(usuario)
+    setUser(u)
+    localStorage.setItem('cafe_user', JSON.stringify(u))
+    return u
   }
 
   const logout = () => {
     setUser(null)
-    localStorage.removeItem('cafe_user')
+    authApi.logout()
   }
 
   const hasPermission = (p) => !p || (user && PERMISSIONS[user.role]?.includes(p))

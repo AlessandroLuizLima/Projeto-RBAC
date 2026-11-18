@@ -1,7 +1,8 @@
 // Cliente da API pública (cliente na mesa, SEM login).
 // Separado de services/api.js, que cuida do painel (JWT, refresh e redirecionamento para /login).
 
-const BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000/api'
+// Sem VITE_API_URL, usa /api no mesmo endereço do site (o Vite repassa ao back-end).
+const BASE = import.meta.env.VITE_API_URL || '/api'
 
 // As imagens são servidas pela raiz da API (/uploads/...), fora de /api.
 export const API_ORIGIN = BASE.replace(/\/api\/?$/, '')
@@ -38,3 +39,7 @@ export const buscarCardapio = (numero, token) => requisitar(numero, token, '/car
 
 export const enviarPedido = (numero, token, pedido) =>
   requisitar(numero, token, '/pedidos', { method: 'POST', body: JSON.stringify(pedido) })
+
+// Status de um pedido da própria mesa (o cliente acompanha o andamento).
+export const buscarPedido = (numero, token, id) =>
+  requisitar(numero, token, `/pedidos/${encodeURIComponent(id)}`)

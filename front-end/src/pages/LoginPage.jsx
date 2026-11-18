@@ -19,7 +19,7 @@ export default function LoginPage() {
   }
 
   const fill = (role) => {
-    const c = { admin:['dono@cafegrao.com','123456'], gerente:['gerente@cafegrao.com','123456'], barista:['barista@cafegrao.com','123456'] }
+    const c = { admin:['proprietario@cafegrao.com','123456'], gerente:['gerente@cafegrao.com','123456'], barista:['barista@cafegrao.com','123456'] }
     setEmail(c[role][0]); setSenha(c[role][1]); setHints(false)
   }
 

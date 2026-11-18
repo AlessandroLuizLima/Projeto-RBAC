@@ -97,10 +97,35 @@ describe('fluxo completo do cliente', () => {
     expect(screen.queryByRole('button', { name: /avançar/i })).not.toBeInTheDocument()
   })
 
+  test('"Acompanhar meu pedido" mostra o status atual e os itens do pedido', async () => {
+    const PEDIDO = { id: 55, status: 'em_preparo', total: '5.00', observacao: null,
+      itens: [{ produto_nome: 'Espresso', quantidade: 1, preco_unitario: '5.00' }] }
+    const fetchFn = instalarFetch({
+      cardapio: (url) => (/\/pedidos\/55$/.test(url) ? json(200, PEDIDO) : json(200, { mesa: 7, produtos: PRODUTOS })),
+    })
+    const user = userEvent.setup()
+    abrir()
+    await irParaCardapio(user)
+    await user.click(screen.getByRole('button', { name: 'Incluir Espresso' }))
+    await user.click(screen.getByRole('button', { name: /avançar/i }))
+    await user.click(screen.getByRole('button', { name: /concluir pedido/i }))
+    await user.click(await screen.findByRole('button', { name: /acompanhar meu pedido/i }))
+
+    expect(await screen.findByText('1× Espresso')).toBeInTheDocument()
+    const atual = document.querySelector('[aria-current="step"]')
+    expect(atual).toHaveTextContent(/em preparo/i)
+    const consulta = fetchFn.mock.calls.find(([url]) => /\/pedidos\/55$/.test(url))
+    expect(consulta[1].headers['x-mesa-token']).toBe('tok123')
+
+    // Ao voltar ao cardápio, continua dando para acompanhar o pedido.
+    await user.click(screen.getByRole('button', { name: /fazer outro pedido/i }))
+    expect(await screen.findByRole('button', { name: /acompanhar pedido #55/i })).toBeInTheDocument()
+  })
+
   test('segue sozinho para o cardápio depois da animação', async () => {
     vi.useFakeTimers()
     abrir()
-    await act(async () => { await vi.advanceTimersByTimeAsync(3500) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(8100) })
     expect(screen.getByRole('heading', { name: /faça o seu pedido/i })).toBeInTheDocument()
   })
 })
@@ -131,13 +156,13 @@ describe('cardápio', () => {
     expect(screen.getByRole('heading', { name: 'Salgados' })).toBeInTheDocument()
   })
 
-  test('imagem do produto vem da origem da API; sem imagem mostra o ícone padrão', async () => {
+  test('imagem do produto vem da API (mesmo endereço ou VITE_API_URL); sem imagem mostra o ícone padrão', async () => {
     const user = userEvent.setup()
     const { container } = abrir()
     await irParaCardapio(user)
     const imgs = container.querySelectorAll('img.mesa-img')
     expect(imgs).toHaveLength(1)
-    expect(imgs[0].getAttribute('src')).toMatch(/^https?:\/\/[^/]+\/uploads\/produtos\/a\.png$/)
+    expect(imgs[0].getAttribute('src')).toMatch(/^(https?:\/\/[^/]+)?\/uploads\/produtos\/a\.png$/)
     expect(container.querySelectorAll('.mesa-img-vazia')).toHaveLength(2)
   })
 

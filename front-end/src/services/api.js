@@ -1,17 +1,17 @@
 // ─── Base config ─────────────────────────────────────────────────────────────
-const BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000/api'
+// Sem VITE_API_URL, usa /api no mesmo endereço do site (o Vite repassa ao back-end).
+const BASE = import.meta.env.VITE_API_URL || '/api'
 
 const getToken = () => localStorage.getItem('cafe_token')
 const setToken = (t) => localStorage.setItem('cafe_token', t)
-const setRefreshToken = (t) => localStorage.setItem('cafe_refresh', t)
-const getRefreshToken = () => localStorage.getItem('cafe_refresh')
-const clearTokens = () => {
+export const clearTokens = () => {
   localStorage.removeItem('cafe_token')
-  localStorage.removeItem('cafe_refresh')
   localStorage.removeItem('cafe_user')
 }
 
 // ─── Core fetch wrapper ───────────────────────────────────────────────────────
+// O back-end responde erros como { erro: '...' } e não tem refresh token:
+// com o token vencido (401), limpa a sessão e volta para o login.
 async function apiFetch(path, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
@@ -20,74 +20,49 @@ async function apiFetch(path, options = {}) {
   const token = getToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
 
-  let res = await fetch(`${BASE}${path}`, { ...options, headers })
-
-  // Token expired — try refresh once
-  if (res.status === 401 && path !== '/auth/login') {
-    const refreshed = await tryRefresh()
-    if (refreshed) {
-      headers['Authorization'] = `Bearer ${getToken()}`
-      res = await fetch(`${BASE}${path}`, { ...options, headers })
-    } else {
-      clearTokens()
-      window.location.href = '/login'
-      return
-    }
-  }
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: 'Erro desconhecido' }))
-    throw new Error(body.error || `HTTP ${res.status}`)
-  }
-
-  return res.json()
-}
-
-async function tryRefresh() {
-  const refresh = getRefreshToken()
-  if (!refresh) return false
+  let res
   try {
-    const res = await fetch(`${BASE}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: refresh }),
-    })
-    if (!res.ok) return false
-    const { accessToken, refreshToken } = await res.json()
-    setToken(accessToken)
-    setRefreshToken(refreshToken)
-    return true
+    res = await fetch(`${BASE}${path}`, { ...options, headers })
   } catch {
-    return false
+    throw new Error('Sem conexão com o servidor.')
   }
+
+  if (res.status === 401 && path !== '/auth/login') {
+    clearTokens()
+    window.location.href = '/login'
+    return new Promise(() => {}) // a página vai recarregar
+  }
+
+  const body = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(body?.erro || body?.error || `HTTP ${res.status}`)
+  return body
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 export const authApi = {
+  // Devolve { token, usuario: { id, nome, email, role } }
   async login(email, senha) {
     const data = await apiFetch('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, senha }),
     })
-    setToken(data.accessToken)
-    setRefreshToken(data.refreshToken)
-    localStorage.setItem('cafe_user', JSON.stringify(data.user))
-    return data.user
+    setToken(data.token)
+    return data.usuario
   },
 
-  async logout() {
-    await apiFetch('/auth/logout', { method: 'POST' }).catch(() => {})
+  logout() {
     clearTokens()
   },
 
-  async me() {
-    return apiFetch('/auth/me')
+  perfil() {
+    return apiFetch('/auth/perfil')
   },
+}
 
-  getStoredUser() {
-    const s = localStorage.getItem('cafe_user')
-    return s ? JSON.parse(s) : null
-  },
+// ─── Mesas (QR code) ──────────────────────────────────────────────────────────
+export const mesasApi = {
+  listar: ()       => apiFetch('/mesas'),
+  criar:  (numero) => apiFetch('/mesas', { method: 'POST', body: JSON.stringify({ numero }) }),
 }
 
 // ─── Usuários ─────────────────────────────────────────────────────────────────
@@ -105,7 +80,7 @@ export const pedidosApi = {
   buscar: (id)          => apiFetch(`/pedidos/${id}`),
   criar:  (body)        => apiFetch('/pedidos', { method: 'POST', body: JSON.stringify(body) }),
   atualizarStatus: (id, status) =>
-    apiFetch(`/pedidos/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+    apiFetch(`/pedidos/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
   marcarPago: (id) =>
     apiFetch(`/pedidos/${id}/pago`, { method: 'PATCH' }),
 }

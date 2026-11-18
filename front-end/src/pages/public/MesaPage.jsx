@@ -4,9 +4,10 @@ import BoasVindas from '../../components/mesa/BoasVindas'
 import Cardapio from '../../components/mesa/Cardapio'
 import Resumo from '../../components/mesa/Resumo'
 import Confirmacao from '../../components/mesa/Confirmacao'
+import Acompanhamento from '../../components/mesa/Acompanhamento'
 import { NOME_CAFE } from '../../config/cafe'
 import { alterar, linhas, montarPedido, reconciliar, totalCentavos } from '../../lib/carrinho'
-import { lerCarrinho, resolverToken, salvarCarrinho } from '../../lib/sessaoMesa'
+import { lerCarrinho, lerUltimoPedido, resolverToken, salvarCarrinho, salvarUltimoPedido } from '../../lib/sessaoMesa'
 import { buscarCardapio, enviarPedido } from '../../services/publicoApi'
 import '../../styles/mesa.css'
 
@@ -30,7 +31,7 @@ function MesaFluxo({ numero }) {
   // O token vem do QR (?t=) e é guardado na sessão; fica no estado para sobreviver à limpeza da URL.
   const [token] = useState(() => resolverToken(numero, location.search))
 
-  const [etapa, setEtapa] = useState('boas-vindas') // boas-vindas | cardapio | resumo | confirmado
+  const [etapa, setEtapa] = useState('boas-vindas') // boas-vindas | cardapio | resumo | confirmado | acompanhar
   const [cardapio, setCardapio] = useState({ estado: token ? 'carregando' : 'invalido', produtos: [], erro: '' })
   const [carrinho, setCarrinho] = useState(() => lerCarrinho(numero))
   const [observacao, setObservacao] = useState('')
@@ -38,6 +39,7 @@ function MesaFluxo({ numero }) {
   const [enviando, setEnviando] = useState(false)
   const [erroEnvio, setErroEnvio] = useState('')
   const [pedido, setPedido] = useState(null)
+  const [ultimoPedidoId, setUltimoPedidoId] = useState(() => lerUltimoPedido(numero))
   const enviandoRef = useRef(false) // trava duplo clique antes mesmo do re-render
 
   // Tira o token da barra de endereço (não fica no histórico nem em prints/compartilhamentos).
@@ -101,6 +103,8 @@ function MesaFluxo({ numero }) {
     try {
       const criado = await enviarPedido(numero, token, montarPedido(carrinho, observacao))
       setPedido(criado)
+      setUltimoPedidoId(criado.id)
+      salvarUltimoPedido(numero, criado.id)
       setCarrinho({})
       setObservacao('')
       irPara('confirmado')
@@ -146,6 +150,8 @@ function MesaFluxo({ numero }) {
           onAlterar={aoAlterar}
           onAvancar={() => irPara('resumo')}
           onTentarNovamente={tentarNovamente}
+          ultimoPedidoId={ultimoPedidoId}
+          onAcompanhar={() => irPara('acompanhar')}
         />
       )}
 
@@ -166,7 +172,20 @@ function MesaFluxo({ numero }) {
       )}
 
       {etapa === 'confirmado' && pedido && (
-        <Confirmacao pedido={pedido} onNovoPedido={() => { setPedido(null); carregar(); irPara('cardapio') }} />
+        <Confirmacao
+          pedido={pedido}
+          onAcompanhar={() => irPara('acompanhar')}
+          onNovoPedido={() => { setPedido(null); carregar(); irPara('cardapio') }}
+        />
+      )}
+
+      {etapa === 'acompanhar' && ultimoPedidoId && (
+        <Acompanhamento
+          numeroMesa={numero}
+          token={token}
+          pedidoId={ultimoPedidoId}
+          onNovoPedido={() => { setPedido(null); carregar(); irPara('cardapio') }}
+        />
       )}
     </main>
   )

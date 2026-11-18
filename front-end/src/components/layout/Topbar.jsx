@@ -2,7 +2,7 @@ import { useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 
 const TITLES = {
-  '/':'/dashboard','/pedidos':'/pedidos','/estoque':'/estoque','/produtos':'/produtos',
+  '/':'/dashboard','/pedidos':'/pedidos','/mesas':'/mesas','/estoque':'/estoque','/produtos':'/produtos',
   '/relatorios':'/relatorios','/equipe':'/equipe','/roles':'/permissoes',
   '/configuracoes':'/configuracoes','/perfil':'/perfil',
 }

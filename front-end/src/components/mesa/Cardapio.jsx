@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Coffee, Minus, Plus } from 'lucide-react'
+import { ChevronRight, Coffee, Minus, Plus } from 'lucide-react'
 import { emCentavos, formatarCentavos, LIMITES, quantidadeTotal } from '../../lib/carrinho'
 import { urlImagem } from '../../services/publicoApi'
 
@@ -65,7 +65,7 @@ function ProdutoCard({ produto, quantidade, onAlterar }) {
 
 export default function Cardapio({
   nomeCafe, numeroMesa, estado, erro, aviso, produtos, carrinho, totalEmCentavos,
-  onAlterar, onAvancar, onTentarNovamente,
+  onAlterar, onAvancar, onTentarNovamente, ultimoPedidoId, onAcompanhar,
 }) {
   const qtd = quantidadeTotal(carrinho)
 
@@ -77,6 +77,13 @@ export default function Cardapio({
       </header>
 
       <h2 className="mesa-titulo">Faça o seu pedido</h2>
+
+      {ultimoPedidoId && onAcompanhar && (
+        <button type="button" className="mesa-link-pedido" onClick={onAcompanhar}>
+          <span>Acompanhar pedido #{ultimoPedidoId}</span>
+          <ChevronRight size={18} aria-hidden="true" />
+        </button>
+      )}
 
       {aviso && <p role="status" className="mesa-aviso">{aviso}</p>}
 

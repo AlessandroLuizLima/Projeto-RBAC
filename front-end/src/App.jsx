@@ -13,6 +13,7 @@ import ConfigPage      from './pages/ConfigPage'
 import PerfilPage      from './pages/PerfilPage'
 import NaoAutorizado   from './pages/NaoAutorizado'
 import MesaPage        from './pages/public/MesaPage'
+import MesasPage       from './pages/MesasPage'
 
 function Guard({ children, perm }) {
   const { user, loading, hasPermission } = useAuth()
@@ -38,6 +39,7 @@ function AppRoutes() {
       <Route path="/" element={<Guard><AppLayout /></Guard>}>
         <Route index               element={<Guard perm="view_dashboard">  <Dashboard      /></Guard>} />
         <Route path="pedidos"      element={<Guard perm="view_orders">      <PedidosPage    /></Guard>} />
+        <Route path="mesas"        element={<Guard perm="manage_tables">    <MesasPage      /></Guard>} />
         <Route path="estoque"      element={<Guard perm="view_inventory">   <EstoquePage    /></Guard>} />
         <Route path="produtos"     element={<Guard perm="view_products">    <ProdutosPage   /></Guard>} />
         <Route path="relatorios"   element={<Guard perm="view_reports">     <RelatoriosPage /></Guard>} />

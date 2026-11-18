@@ -10,6 +10,7 @@ const Icon = ({ d, size=17 }) => (
 const NAV = [
   { to:'/',              label:'Dashboard',  perm:'view_dashboard',  icon:['M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z','M9 22V12h6v10'] },
   { to:'/pedidos',       label:'Pedidos',    perm:'view_orders',     icon:['M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2','M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2z'] },
+  { to:'/mesas',         label:'Mesas (QR)', perm:'manage_tables',   icon:['M3 3h7v7H3z','M14 3h7v7h-7z','M3 14h7v7H3z','M14 14h3v3h-3z','M20 14v.01','M14 20h.01','M17 17h4v4h-4'] },
   { to:'/estoque',       label:'Estoque',    perm:'view_inventory',  icon:['M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z'] },
   { to:'/produtos',      label:'Produtos',   perm:'view_products',   icon:['M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z'] },
   { to:'/relatorios',    label:'Relatórios', perm:'view_reports',    icon:['M18 20V10','M12 20V4','M6 20v-6'] },

@@ -43,3 +43,17 @@ export function salvarCarrinho(numero, carrinho) {
     else s?.setItem(chave(numero, 'carrinho'), JSON.stringify(carrinho))
   } catch { /* ignora */ }
 }
+
+// Último pedido feito nesta aba, para o cliente voltar a acompanhar o andamento.
+export function lerUltimoPedido(numero) {
+  try {
+    const id = Number(armazenamento()?.getItem(chave(numero, 'pedido')))
+    return Number.isInteger(id) && id > 0 ? id : null
+  } catch {
+    return null
+  }
+}
+
+export function salvarUltimoPedido(numero, id) {
+  try { armazenamento()?.setItem(chave(numero, 'pedido'), String(id)) } catch { /* ignora */ }
+}

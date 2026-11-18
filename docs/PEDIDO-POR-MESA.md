@@ -78,3 +78,16 @@ Variáveis de build do front (o Vite as embute na hora do `build`):
 O servidor web do front precisa devolver `index.html` para rotas desconhecidas (o `nginx.conf` do projeto já faz
 isso). Sem isso, abrir `/mesa/7` direto, que é o que o QR code faz, dá 404.
 Testes: `cd front-end && npm test`.
+
+## QR codes e teste pelo celular
+
+- No painel, entre como proprietário ou gerente e abra **Mesas (QR)**: cada mesa mostra o QR code
+  com o link `http://<ip-do-computador>:5173/mesa/<numero>?t=<token>`, prontos para imprimir.
+- Em desenvolvimento o Vite descobre sozinho o IP do computador na rede e repassa `/api` e
+  `/uploads` para o back-end (`vite.config.js`). Assim o celular só precisa alcançar a porta 5173.
+  O campo "Endereço do site" na página permite trocar o endereço (ex.: domínio em produção);
+  `VITE_URL_PUBLICA` define o padrão no build.
+- O celular precisa estar no mesmo Wi-Fi. Se não abrir, libere o Node.js no Firewall do Windows.
+- Depois de concluir, o cliente toca em **Acompanhar meu pedido**: a tela consulta
+  `GET /api/publico/mesa/:numero/pedidos/:id` a cada 5 s e mostra Recebido → Em preparo → Pronto →
+  Entregue. A equipe muda o status em **Pedidos** no painel (que agora lê os pedidos reais da API).
