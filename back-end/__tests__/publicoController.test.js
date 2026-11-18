@@ -131,6 +131,9 @@ describe('publicoController.cardapio()', () => {
     const sql = pool.query.mock.calls[0][0];
     expect(sql).toMatch(/ativo = true/);
     expect(sql).toMatch(/AS disponivel/);
+    // informa só o máximo que o cliente pode pedir (teto = limite por item), nunca o estoque real
+    expect(sql).toMatch(/LEAST\(COALESCE\(e\.quantidade, 0\), \$1::int\) AS max_quantidade/);
+    expect(pool.query.mock.calls[0][1]).toEqual([LIMITES.maxQuantidadePorItem]);
     expect(sql).not.toMatch(/SELECT p\.\*/);
     expect(sql).not.toMatch(/e\.quantidade AS/);
   });
