@@ -1,7 +1,9 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
 const initDB = require('./src/db/init');
+const { UPLOADS_DIR, PRODUTOS_DIR } = require('./src/config/uploads');
 
 const authRoutes = require('./src/routes/auth');
 const usuariosRoutes = require('./src/routes/usuarios');
@@ -20,6 +22,16 @@ if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PRO
 
 app.use(cors());
 app.use(express.json());
+
+// Imagens enviadas. Os nomes são aleatórios e únicos, então o cache longo é seguro.
+// O nosniff impede o navegador de "adivinhar" outro tipo de conteúdo.
+fs.mkdirSync(PRODUTOS_DIR, { recursive: true });
+app.use('/uploads', express.static(UPLOADS_DIR, {
+  maxAge: '7d',
+  immutable: true,
+  index: false,
+  setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff'),
+}));
 
 // Rotas
 app.use('/api/auth', authRoutes);
@@ -55,6 +67,8 @@ async function start() {
     console.log('  POST   /api/produtos');
     console.log('  PUT    /api/produtos/:id');
     console.log('  DELETE /api/produtos/:id');
+    console.log('  POST   /api/produtos/:id/imagem');
+    console.log('  DELETE /api/produtos/:id/imagem');
     console.log('  GET    /api/estoque');
     console.log('  GET    /api/estoque/baixo');
     console.log('  PUT    /api/estoque/:produto_id');
