@@ -28,7 +28,7 @@ services:
       - cafe_grao_network
     build:
       context: ./back-end
-      dockerfile: DockerFile
+      dockerfile: Dockerfile
     container_name: cafe_grao_backend
     environment:
       DB_HOST: ${DB_HOST}
@@ -37,6 +37,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       PORT: ${PORT}
       JWT_SECRET: ${JWT_SECRET}
+      UPLOADS_DIR: /app/uploads
     ports:
       - "${BACKEND_PORT}:3000"
     depends_on:
@@ -45,6 +46,8 @@ services:
     volumes:
       - ./back-end/logs:/app/logs
       - ./back-end/data:/app/data
+      # Imagens enviadas pelo painel: sem este volume elas somem quando o container é recriado
+      - uploads:/app/uploads
     command: node server.js
     restart: unless-stopped
 
@@ -56,7 +59,11 @@ services:
       - 1.1.1.1
     build:
       context: ./front-end
-      dockerfile: DockerFile
+      dockerfile: Dockerfile
+      args:
+        # Embutidos no build do front. Ex.: VITE_API_URL=http://localhost:3000/api
+        VITE_API_URL: ${VITE_API_URL:-}
+        VITE_NOME_CAFE: ${VITE_NOME_CAFE:-}
     container_name: cafe_grao_frontend
     ports:
       - "${FRONTEND_PORT}:80"
@@ -73,3 +80,4 @@ networks:
 
 volumes:
   pgdata:
+  uploads:
