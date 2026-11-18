@@ -60,3 +60,5 @@ desktop.ini
 *.ntvs*
 *.njsproj
 *.sln
+# ── Imagens enviadas pelo painel ──
+back-end/uploads/
