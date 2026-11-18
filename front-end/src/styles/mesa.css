@@ -1,0 +1,90 @@
+/* Tela pública da mesa (cliente). Usa as variáveis de cor do index.css. */
+.mesa-app { min-height: 100dvh; max-width: 560px; margin: 0 auto; background: var(--bg); color: var(--text); font-family: var(--font); }
+.mesa-tela { padding: 18px 16px 120px; }
+.mesa-topo { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.mesa-marca { font-family: var(--serif); font-size: 22px; color: var(--gold2); font-weight: 600; }
+.mesa-pill { display: inline-block; padding: 4px 12px; border-radius: 999px; background: var(--gold-bg); border: 1px solid var(--gold-border); color: var(--gold2); font-size: 13px; font-weight: 500; }
+.mesa-titulo { font-family: var(--serif); font-size: 32px; font-weight: 600; margin: 0 0 14px; }
+.mesa-sub, .mesa-desc, .mesa-vazio { color: var(--text2); font-size: 14px; line-height: 1.5; }
+.mesa-desc { display: block; margin: 2px 0 0; }
+
+/* Botões (alvo de toque >= 44px) */
+.mesa-btn { min-height: 44px; padding: 0 18px; border-radius: var(--radius); font-size: 15px; font-weight: 600; border: 1px solid var(--border2); background: var(--bg3); color: var(--text); }
+.mesa-btn:disabled { opacity: .5; cursor: not-allowed; }
+.mesa-btn-ouro { background: var(--gold); border-color: var(--gold); color: #1a1405; }
+.mesa-btn-ghost { background: transparent; color: var(--text2); }
+.mesa-btn-peq { min-height: 38px; padding: 0 16px; font-size: 14px; }
+.mesa-btn-grande { flex: 1; display: flex; justify-content: space-between; align-items: center; min-height: 52px; }
+.mesa-btn:focus-visible, .mesa-stepper button:focus-visible, .mesa-obs textarea:focus-visible { outline: 2px solid var(--gold2); outline-offset: 2px; }
+
+/* Cardápio */
+.mesa-categoria { font-family: var(--serif); font-size: 22px; color: var(--gold); margin: 22px 0 10px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.mesa-lista, .mesa-resumo-lista { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.mesa-card { display: flex; gap: 12px; padding: 10px; background: var(--bg1); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.mesa-card.esgotado { opacity: .6; }
+.mesa-img { width: 92px; height: 92px; flex: none; border-radius: var(--radius); object-fit: cover; background: var(--bg3); }
+.mesa-img-vazia { display: grid; place-items: center; color: var(--gold); }
+.mesa-card-corpo { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mesa-card-corpo h4 { margin: 0; font-size: 16px; font-weight: 600; }
+.mesa-card-rodape { margin-top: auto; padding-top: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mesa-preco { font-family: var(--mono); font-size: 15px; color: var(--gold2); }
+.mesa-stepper { display: inline-flex; align-items: center; border: 1px solid var(--gold-border); border-radius: 999px; overflow: hidden; }
+.mesa-stepper button { width: 40px; height: 38px; display: grid; place-items: center; color: var(--gold2); background: var(--gold-bg); }
+.mesa-stepper button:disabled { opacity: .35; }
+.mesa-stepper output { min-width: 30px; text-align: center; font-weight: 600; }
+.mesa-aviso { background: var(--amber-bg); border: 1px solid var(--amber); color: var(--amber); padding: 10px 12px; border-radius: var(--radius); font-size: 14px; }
+.mesa-erro { background: var(--red-bg); border: 1px solid var(--red); color: var(--red); padding: 12px; border-radius: var(--radius); font-size: 14px; display: grid; gap: 10px; }
+.mesa-skeletons { display: grid; gap: 12px; }
+.mesa-skeletons div { height: 112px; border-radius: var(--radius-lg); background: linear-gradient(90deg, var(--bg1), var(--bg3), var(--bg1)); background-size: 200% 100%; animation: mesa-shimmer 1.4s linear infinite; }
+@keyframes mesa-shimmer { to { background-position: -200% 0; } }
+
+/* Barra fixa "Avançar" */
+.mesa-barra { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; max-width: 560px; margin: 0 auto; display: flex; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: linear-gradient(to top, var(--bg) 70%, transparent); }
+.mesa-barra-info { font-weight: 500; font-size: 14px; }
+
+/* Resumo */
+.mesa-resumo-item { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; padding: 10px; background: var(--bg1); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.mesa-resumo-item strong { display: block; font-size: 15px; }
+.mesa-obs { margin-top: 18px; display: grid; gap: 6px; }
+.mesa-obs label { font-size: 13px; color: var(--text2); }
+.mesa-obs textarea { width: 100%; resize: vertical; padding: 12px; background: var(--bg2); border: 1px solid var(--border2); border-radius: var(--radius); color: var(--text); font-size: 16px; /* 16px evita zoom no iOS */ }
+.mesa-obs small { text-align: right; color: var(--text3); }
+.mesa-total { display: flex; justify-content: space-between; align-items: baseline; margin: 18px 0; font-size: 16px; }
+.mesa-total strong { font-family: var(--mono); font-size: 22px; color: var(--gold2); }
+.mesa-acoes { display: flex; gap: 10px; }
+
+/* Confirmação */
+.mesa-confirmacao { display: grid; gap: 10px; justify-items: center; text-align: center; padding-top: 12vh; }
+.mesa-confirmacao .mesa-total { width: 100%; }
+.mesa-check { width: 84px; height: 84px; border-radius: 50%; display: grid; place-items: center; background: var(--green-bg); border: 2px solid var(--green); color: var(--green); animation: mesa-pop .5s cubic-bezier(.2,1.6,.4,1) both; }
+@keyframes mesa-pop { from { transform: scale(0); } to { transform: scale(1); } }
+
+/* Boas-vindas: o café sobe girando e "pula" como item de bloco do Mario */
+.mesa-boasvindas { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 24px 20px calc(24px + env(safe-area-inset-bottom)); text-align: center; overflow: hidden; }
+.mesa-palco { position: relative; height: 170px; width: 170px; perspective: 600px; }
+.mesa-cup-pulo { position: absolute; inset: 0; display: grid; place-items: center; animation: mesa-pulo 1.7s both; }
+.mesa-cup-giro { animation: mesa-giro 1.7s cubic-bezier(.2,.7,.3,1) both; transform-style: preserve-3d; }
+.mesa-sombra { position: absolute; left: 50%; bottom: 8px; width: 110px; height: 12px; margin-left: -55px; border-radius: 50%; background: rgba(0,0,0,.55); filter: blur(4px); animation: mesa-sombra 1.7s both; }
+@keyframes mesa-pulo {
+  0%   { transform: translateY(75vh); animation-timing-function: cubic-bezier(.15,.85,.3,1); }   /* sobe rápido */
+  50%  { transform: translateY(-16vh); animation-timing-function: cubic-bezier(.65,0,.9,.4); }   /* topo do pulo, cai acelerando */
+  74%  { transform: translateY(0) scale(1.1,.86); animation-timing-function: ease-out; }          /* pousa e achata */
+  88%  { transform: translateY(-2.5vh) scale(.97,1.04); animation-timing-function: ease-in; }     /* quica */
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes mesa-giro { from { transform: rotateY(0); } to { transform: rotateY(1080deg); } }
+@keyframes mesa-sombra { 0%, 45% { opacity: 0; transform: scaleX(.3); } 74% { opacity: 1; transform: scaleX(1.15); } 100% { opacity: .8; transform: scaleX(1); } }
+.mesa-vapor { fill: none; stroke: var(--gold3); stroke-width: 3; stroke-linecap: round; opacity: 0; animation: mesa-vapor 2.2s ease-in-out 1.5s infinite; }
+.mesa-vapor.v2 { animation-delay: 1.8s; } .mesa-vapor.v3 { animation-delay: 2.1s; }
+@keyframes mesa-vapor { 0% { opacity: 0; transform: translateY(6px); } 40% { opacity: .8; } 100% { opacity: 0; transform: translateY(-10px); } }
+.mesa-boasvindas-texto { animation: mesa-sobe .7s ease-out 1.35s both; }
+.mesa-boasvindas h1 { font-family: var(--serif); font-size: 30px; line-height: 1.15; font-weight: 500; margin: 14px 0 8px; }
+.mesa-boasvindas h1 span { display: block; margin-top: 4px; font-size: 44px; font-weight: 700; color: var(--gold2); }
+.mesa-comecar { animation: mesa-sobe .6s ease-out 2s both; }
+@keyframes mesa-sobe { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+/* Quem desativou animações no aparelho vê tudo parado e já visível */
+@media (prefers-reduced-motion: reduce) {
+  .mesa-cup-pulo, .mesa-cup-giro, .mesa-sombra, .mesa-vapor, .mesa-boasvindas-texto, .mesa-comecar, .mesa-check, .mesa-skeletons div { animation: none; }
+  .mesa-sombra { opacity: .8; }
+}
