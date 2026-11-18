@@ -14,7 +14,7 @@ errado respondem igual (`401`), para não revelar quais mesas existem.
 
 | Método | Rota | Resposta |
 |---|---|---|
-| GET  | `/api/publico/mesa/:numero/cardapio` | `{ mesa, produtos: [{ id, nome, descricao, preco, categoria, imagem_url, disponivel }] }` |
+| GET  | `/api/publico/mesa/:numero/cardapio` | `{ mesa, produtos: [{ id, nome, descricao, preco, categoria, imagem_url, disponivel, max_quantidade }] }` — `max_quantidade` é o máximo que o cliente pode pedir do item (teto de 10; não é o estoque real). `imagem_url` é relativa (`/uploads/produtos/...`): o front deve prefixar com a origem da API. |
 | POST | `/api/publico/mesa/:numero/pedidos` | `201 { id, mesa, status, total }` |
 | GET  | `/api/publico/mesa/:numero/pedidos/:id` | `{ id, status, total, observacao, itens: [...] }` — só pedidos **da própria mesa** |
 
@@ -44,3 +44,37 @@ errado respondem igual (`401`), para não revelar quais mesas existem.
 Tabela nova `mesas`; colunas novas `produtos.imagem_url`, `pedidos.mesa_id`, `pedidos.origem`.
 As migrações são idempotentes e rodam no `initDB()`. Em bancos antigos com produtos duplicados
 (seed antigo), rode uma vez `back-end/scripts/limpar-duplicatas.sql`.
+
+## Imagens dos produtos (upload de arquivo)
+
+| Método | Rota | Perfis |
+|---|---|---|
+| POST   | `/api/produtos/:id/imagem` — `multipart/form-data`, campo **`imagem`** | proprietário, gerente |
+| DELETE | `/api/produtos/:id/imagem` | proprietário, gerente |
+
+- Aceita **JPG, PNG e WebP** de até **2 MB**. O tipo é conferido pelos bytes do arquivo (o nome e o
+  `Content-Type` enviados são ignorados); **SVG é recusado** de propósito (pode carregar script).
+- O arquivo é salvo com nome aleatório em `UPLOADS_DIR` (padrão `back-end/uploads`) e servido em
+  `/uploads/produtos/<nome>`. A resposta traz `imagem_url` (caminho relativo).
+- Trocar a imagem apaga a anterior; se algo falhar no meio, não sobra arquivo órfão.
+- **Docker:** o `docker-compose` já monta o volume `uploads`. Sem volume, as imagens somem quando o container
+  é recriado. **Kubernetes:** com mais de 1 réplica do back-end, cada pod teria a sua própria pasta; use um
+  volume compartilhado (PVC) ou armazenamento de objetos (S3).
+- Exemplo: `curl -X POST http://localhost:3000/api/produtos/1/imagem -H "Authorization: Bearer <token>" -F imagem=@cafe.jpg`
+
+## Front-end (tela do cliente)
+
+Rota pública `/mesa/:numero?t=<token>` (`front-end/src/pages/public/MesaPage.jsx`).
+Fluxo: boas-vindas animada → cardápio (incluir/quantidade) → **Avançar** (só aparece com ≥ 1 item) →
+resumo + observação → **Concluir pedido** → confirmação.
+
+Variáveis de build do front (o Vite as embute na hora do `build`):
+
+| Variável | Para quê | Padrão |
+|---|---|---|
+| `VITE_API_URL` | URL da API, ex.: `https://api.meucafe.com/api` | `http://127.0.0.1:3000/api` |
+| `VITE_NOME_CAFE` | Nome na tela de boas-vindas | `Café Grão` |
+
+O servidor web do front precisa devolver `index.html` para rotas desconhecidas (o `nginx.conf` do projeto já faz
+isso). Sem isso, abrir `/mesa/7` direto, que é o que o QR code faz, dá 404.
+Testes: `cd front-end && npm test`.
