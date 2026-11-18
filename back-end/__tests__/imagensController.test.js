@@ -2,7 +2,7 @@
 const path = require('path');
 const { criarImagensController, detectarTipo } = require('../src/controllers/imagensController');
 
-const DIR = '/srv/uploads/produtos';
+const DIR = path.join(path.sep, 'srv', 'uploads', 'produtos'); // usa o separador do SO, para o teste passar também no Windows
 const URL_BASE = '/uploads/produtos';
 
 const JPG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(20, 1)]);
