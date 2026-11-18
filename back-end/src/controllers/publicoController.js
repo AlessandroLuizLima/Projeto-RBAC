@@ -72,11 +72,13 @@ function criarPublicoController(pool) {
     try {
       const resultado = await pool.query(
         `SELECT p.id, p.nome, p.descricao, p.preco, p.categoria, p.imagem_url,
-                COALESCE(e.quantidade, 0) > 0 AS disponivel
+                COALESCE(e.quantidade, 0) > 0 AS disponivel,
+                LEAST(COALESCE(e.quantidade, 0), $1::int) AS max_quantidade
          FROM produtos p
          LEFT JOIN estoque e ON e.produto_id = p.id
          WHERE p.ativo = true
-         ORDER BY p.categoria, p.nome`
+         ORDER BY p.categoria, p.nome`,
+        [LIMITES.maxQuantidadePorItem]
       );
       return res.json({ mesa: req.mesa.numero, produtos: resultado.rows });
     } catch (err) {
