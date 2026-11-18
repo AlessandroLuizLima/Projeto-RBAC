@@ -12,6 +12,7 @@ import RolesPage       from './pages/RolesPage'
 import ConfigPage      from './pages/ConfigPage'
 import PerfilPage      from './pages/PerfilPage'
 import NaoAutorizado   from './pages/NaoAutorizado'
+import MesaPage        from './pages/public/MesaPage'
 
 function Guard({ children, perm }) {
   const { user, loading, hasPermission } = useAuth()
@@ -32,6 +33,8 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
       <Route path="/nao-autorizado" element={<NaoAutorizado />} />
+      {/* Pública: cliente na mesa, sem login (o acesso é pelo token do QR code) */}
+      <Route path="/mesa/:numero" element={<MesaPage />} />
       <Route path="/" element={<Guard><AppLayout /></Guard>}>
         <Route index               element={<Guard perm="view_dashboard">  <Dashboard      /></Guard>} />
         <Route path="pedidos"      element={<Guard perm="view_orders">      <PedidosPage    /></Guard>} />
